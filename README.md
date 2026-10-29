@@ -38,6 +38,31 @@ adsb-coverage 46.9480 7.4474 --agl --alt-ft 30,100,300,1000 --near-res-m 10 -o b
 Résumé des portées affiché en console ; un polygone par niveau dans le KML
 (en mode `--agl`, zones visibles secteur par secteur).
 
+## Exemple
+
+[`examples/bern-agl-basses-altitudes.kml`](examples/bern-agl-basses-altitudes.kml) : couverture à basse altitude
+(mode `--agl`) d'un récepteur situé à 46.9480 N, 7.4470 E (sol à 541 m, antenne à 10 m au-dessus du sol, k = 4/3),
+pour des avions à 15, 30, 50, 100 et 330 ft au-dessus du sol.
+
+| Hauteur au-dessus du sol | Portée continue max | Portée visible max |
+|---|---|---|
+| 330 ft | 24 km | 84 km |
+| 100 ft | 14 km | 84 km |
+| 50 ft | 6 km | 84 km |
+| 30 ft | 6 km | 84 km |
+| 15 ft | 4 km | 84 km |
+
+*Portée continue* : distance jusqu'au premier masquage par le relief. *Portée visible* : point visible le plus lointain,
+même derrière une crête (en vol bas, un avion peut réapparaître au-dessus d'un relief éloigné et élevé).
+
+**Ouvrir dans Google Earth**
+
+1. **Google Earth Pro** (ordinateur) : [télécharger le fichier](https://github.com/raphaelcere/clarke-model-generator/raw/main/examples/bern-agl-basses-altitudes.kml)
+   (clic droit, « Enregistrer le lien sous… »), puis double-clic sur le `.kml`, ou *Fichier, Ouvrir*.
+2. **Google Earth web** ([earth.google.com/web](https://earth.google.com/web/)) : menu *Projets*, *Ouvrir*, *Importer un fichier KML depuis l'ordinateur*,
+   puis choisir le fichier téléchargé. Le fichier est volumineux (environ 2 Mo) : l'import peut prendre quelques secondes.
+3. **QGIS** : glisser-déposer le fichier dans la fenêtre.
+
 ## Architecture (UML)
 
 Diagrammes [Mermaid](https://mermaid.js.org/), affichés directement par GitHub. `TerrainSource` est une
