@@ -38,6 +38,19 @@ adsb-coverage 46.9480 7.4474 --agl --alt-ft 30,100,300,1000 --near-res-m 10 -o b
 Résumé des portées affiché en console ; un polygone par niveau dans le KML
 (en mode `--agl`, zones visibles secteur par secteur).
 
+## Calcul en ligne (GitHub Actions)
+
+Le dépôt contient un workflow qui calcule une couverture sans rien installer, depuis les serveurs de GitHub
+(accès direct à swisstopo et à Copernicus, sans proxy d'entreprise) :
+
+1. Onglet **Actions**, workflow **« Calcul de couverture ADS-B / ADS-L »**, bouton **Run workflow**.
+2. Saisir latitude, longitude, mode (`agl` ou `amsl`), hauteur d'antenne et, si besoin, les niveaux en ft.
+3. À la fin de l'exécution, télécharger le KML dans la section **Artifacts** (conservé 30 jours) ; le tableau des
+   portées apparaît dans le résumé de l'exécution.
+
+Les entrées sont validées (nombres uniquement, bornes de plage) avant tout calcul. Il faut un accès en écriture au
+dépôt pour lancer le workflow. Sur un dépôt public, les paramètres saisis sont visibles dans l'historique des exécutions.
+
 ## Exemple
 
 [`examples/bern-agl-basses-altitudes.kml`](examples/bern-agl-basses-altitudes.kml) : couverture à basse altitude
