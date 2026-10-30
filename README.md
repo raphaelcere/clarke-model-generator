@@ -54,16 +54,18 @@ dépôt pour lancer le workflow. Sur un dépôt public, les paramètres saisis s
 ## Exemple
 
 [`examples/bern-agl-basses-altitudes.kml`](examples/bern-agl-basses-altitudes.kml) : couverture à basse altitude
-(mode `--agl`) d'un récepteur situé à 46.9480 N, 7.4470 E (sol à 541 m, antenne à 10 m au-dessus du sol, k = 4/3),
-pour des avions à 15, 30, 50, 100 et 330 ft au-dessus du sol.
+(mode `--agl`) calculée par le workflow GitHub Actions pour un récepteur situé à 46.9744 N, 7.4771 E
+(sol à 521 m, antenne à 10 m au-dessus du sol, k = 4/3), pour des avions à 15, 30, 60, 90, 120 et 150 ft
+au-dessus du sol.
 
 | Hauteur au-dessus du sol | Portée continue max | Portée visible max |
 |---|---|---|
-| 330 ft | 24 km | 84 km |
-| 100 ft | 14 km | 84 km |
-| 50 ft | 6 km | 84 km |
-| 30 ft | 6 km | 84 km |
-| 15 ft | 4 km | 84 km |
+| 150 ft | 6 km | 82 km |
+| 120 ft | 5 km | 81 km |
+| 90 ft | 4 km | 81 km |
+| 60 ft | 4 km | 81 km |
+| 30 ft | 2 km | 81 km |
+| 15 ft | 2 km | 81 km |
 
 *Portée continue* : distance jusqu'au premier masquage par le relief. *Portée visible* : point visible le plus lointain,
 même derrière une crête (en vol bas, un avion peut réapparaître au-dessus d'un relief éloigné et élevé).
