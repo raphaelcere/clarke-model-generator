@@ -58,7 +58,11 @@ The repository contains a workflow that computes a coverage without installing a
 
 1. Open the **Actions** tab, select the workflow **"ADS-B / ADS-L coverage"** and click **Run workflow**.
 2. Enter the latitude, longitude, mode (`agl` or `amsl`), antenna height and, if needed, the levels in ft.
-3. When the run has finished, download the KML from the **Artifacts** section (kept for 30 days); the table of
+3. Optional, to test the reception probability (fading): choose a **preset** (`adsb1090-example` or
+   `adsl-m-example`). It fills the empty link budget fields with the example values of the table in the
+   [Model](#model) section and turns fading on as `rice` if it was `none`. A value typed in a field always wins
+   over the preset. The presets are examples for testing, not validated defaults.
+4. When the run has finished, download the KML from the **Artifacts** section (kept for 30 days); the table of
    ranges appears in the run summary.
 
 The inputs are validated (numbers only, bounded ranges) before anything is computed. Write access to the

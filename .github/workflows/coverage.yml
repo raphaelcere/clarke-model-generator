@@ -53,6 +53,12 @@ on:
         type: choice
         default: none
         options: [none, rayleigh, rice]
+      preset:
+        description: "Test preset that fills the empty link budget fields below with the example values of the README (turns fading on as rice if it is none)"
+        required: true
+        type: choice
+        default: none
+        options: [none, adsb1090-example, adsl-m-example]
       freq_mhz:
         description: "Fading only: carrier frequency (MHz)"
         required: false
@@ -118,6 +124,39 @@ jobs:
           key: swissalti3d-${{ inputs.near_res_m }}-${{ github.run_id }}
           restore-keys: swissalti3d-${{ inputs.near_res_m }}-
 
+      - name: Resolve the preset
+        env:
+          PRESET: ${{ inputs.preset }}
+          IN_FADING: ${{ inputs.fading }}
+          IN_FREQ_MHZ: ${{ inputs.freq_mhz }}
+          IN_EIRP_DBM: ${{ inputs.eirp_dbm }}
+          IN_RX_GAIN_DBI: ${{ inputs.rx_gain_dbi }}
+          IN_LOSSES_DB: ${{ inputs.losses_db }}
+          IN_SENSITIVITY_DBM: ${{ inputs.sensitivity_dbm }}
+          IN_K_DB: ${{ inputs.k_db }}
+          IN_PROB: ${{ inputs.prob }}
+        run: |
+          set -euo pipefail
+          # Example values from the README (not validated defaults): freq MHz, EIRP dBm, Rx gain dBi, sensitivity dBm, K dB
+          case "$PRESET" in
+            none) P_FREQ=""; P_EIRP=""; P_GAIN=""; P_SENS=""; P_K="" ;;
+            adsb1090-example) P_FREQ=1090; P_EIRP=51; P_GAIN=0; P_SENS=-84; P_K=10 ;;
+            adsl-m-example) P_FREQ=868.2; P_EIRP=16.15; P_GAIN=0; P_SENS=-100; P_K=10 ;;
+            *) echo "Unknown preset: $PRESET"; exit 1 ;;
+          esac
+          FADING="$IN_FADING"
+          if [ "$PRESET" != "none" ] && [ "$FADING" = "none" ]; then FADING=rice; fi
+          {
+            echo "FADING=$FADING"
+            echo "FREQ_MHZ=${IN_FREQ_MHZ:-$P_FREQ}"
+            echo "EIRP_DBM=${IN_EIRP_DBM:-$P_EIRP}"
+            echo "RX_GAIN_DBI=${IN_RX_GAIN_DBI:-$P_GAIN}"
+            echo "LOSSES_DB=$IN_LOSSES_DB"
+            echo "SENSITIVITY_DBM=${IN_SENSITIVITY_DBM:-$P_SENS}"
+            echo "K_DB=${IN_K_DB:-$P_K}"
+            echo "PROB=$IN_PROB"
+          } >> "$GITHUB_ENV"
+
       - name: Validate the inputs
         env:
           LAT: ${{ inputs.lat }}
@@ -128,14 +167,6 @@ jobs:
           NEAR_RES_M: ${{ inputs.near_res_m }}
           RMAX_KM: ${{ inputs.rmax_km }}
           K: ${{ inputs.k }}
-          FADING: ${{ inputs.fading }}
-          FREQ_MHZ: ${{ inputs.freq_mhz }}
-          EIRP_DBM: ${{ inputs.eirp_dbm }}
-          RX_GAIN_DBI: ${{ inputs.rx_gain_dbi }}
-          LOSSES_DB: ${{ inputs.losses_db }}
-          SENSITIVITY_DBM: ${{ inputs.sensitivity_dbm }}
-          K_DB: ${{ inputs.k_db }}
-          PROB: ${{ inputs.prob }}
         run: |
           python - <<'PY'
           import os, re, sys
@@ -170,14 +201,6 @@ jobs:
           NEAR_RES_M: ${{ inputs.near_res_m }}
           RMAX_KM: ${{ inputs.rmax_km }}
           K: ${{ inputs.k }}
-          FADING: ${{ inputs.fading }}
-          FREQ_MHZ: ${{ inputs.freq_mhz }}
-          EIRP_DBM: ${{ inputs.eirp_dbm }}
-          RX_GAIN_DBI: ${{ inputs.rx_gain_dbi }}
-          LOSSES_DB: ${{ inputs.losses_db }}
-          SENSITIVITY_DBM: ${{ inputs.sensitivity_dbm }}
-          K_DB: ${{ inputs.k_db }}
-          PROB: ${{ inputs.prob }}
         run: |
           set -euo pipefail
           mkdir -p out
@@ -194,6 +217,11 @@ jobs:
           adsb-coverage "${args[@]}" 2>&1 | tee out/resume.txt
           {
             echo "## ADS-B / ADS-L coverage: ${LAT}, ${LON} (${MODE})"
+            if [ "$FADING" != "none" ]; then
+              echo
+              KTXT=""; [ "$FADING" = "rice" ] && KTXT=", K ${K_DB} dB"
+              echo "Fading: ${FADING}, ${FREQ_MHZ} MHz, EIRP ${EIRP_DBM} dBm, Rx gain ${RX_GAIN_DBI} dBi, losses ${LOSSES_DB} dB, sensitivity ${SENSITIVITY_DBM} dBm${KTXT}, P >= ${PROB}"
+            fi
             echo
             echo '```'
             cat out/resume.txt
