@@ -75,7 +75,7 @@ même derrière une crête (en vol bas, un avion peut réapparaître au-dessus d
 1. **Google Earth Pro** (ordinateur) : [télécharger le fichier](https://github.com/raphaelcere/clarke-model-generator/raw/main/examples/bern-agl-basses-altitudes.kml)
    (clic droit, « Enregistrer le lien sous… »), puis double-clic sur le `.kml`, ou *Fichier, Ouvrir*.
 2. **Google Earth web** ([earth.google.com/web](https://earth.google.com/web/)) : menu *Projets*, *Ouvrir*, *Importer un fichier KML depuis l'ordinateur*,
-   puis choisir le fichier téléchargé. Le fichier est volumineux (environ 2 Mo) : l'import peut prendre quelques secondes.
+   puis choisir le fichier téléchargé. Le fichier est volumineux (environ 1 Mo) : l'import peut prendre quelques secondes.
 3. **QGIS** : glisser-déposer le fichier dans la fenêtre.
 
 ## Architecture (UML)
