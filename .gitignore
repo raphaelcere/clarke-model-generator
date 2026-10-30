@@ -6,3 +6,4 @@ dist/
 .pytest_cache/
 *.kml
 .cache/
+!examples/*.kml

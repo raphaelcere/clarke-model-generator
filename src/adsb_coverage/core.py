@@ -1,28 +1,28 @@
 """
-adsb_coverage.py - Couverture de réception théorique d'un récepteur fixe ADS-B / ADS-L (au sol).
+Theoretical reception coverage of a fixed ADS-B / ADS-L ground receiver.
 
-Modèle
-------
-Visibilité radioélectrique directe (LOS) avec rayon terrestre effectif k·R (k = 4/3 par défaut,
-modèle d'atmosphère standard « de Clarke »), obstruction par le relief le long de rayons radiaux.
-Pour chaque azimut et chaque altitude d'aéronef (AMSL), on calcule la portée maximale à laquelle
-un aéronef reste visible depuis l'antenne.
+Model
+-----
+Line-of-sight (LOS) visibility with an effective Earth radius k*R (k = 4/3 by default, the standard
+atmosphere, or "Clarke", model), obstructed by terrain along radial profiles. For every azimuth the tool
+decides, at each distance, whether an aircraft at a given level is visible from the antenna. Levels are
+either constant altitudes (AMSL, the default) or heights above the local ground (AGL, ``--agl``).
 
-Topographie
------------
-- swissALTI3D (swisstopo, 2 m) téléchargé automatiquement, pour la zone proche (--near-km).
-- Copernicus GLO-30 (30 m, AWS open data) pour le reste (hors Suisse / champ lointain), lu en
-  basse résolution via les overviews du COG. Nécessite rasterio.
-- ou un MNT GeoTIFF local en EPSG:4326 (--dem).
+Terrain
+-------
+- swissALTI3D (swisstopo, 2 m), downloaded automatically, for the near zone (``--near-km``).
+- Copernicus GLO-30 (30 m, AWS open data) for the rest, read at low resolution from the cloud-optimised
+  GeoTIFF overviews. Requires rasterio.
+- or local GeoTIFF terrain models in EPSG:4326 (``--dem``).
 
-Sortie : KML (un polygone par altitude) + résumé des portées en console.
+Output: a KML file (one layer per level) and a summary table of the ranges on the console.
 
-Exemples
+Examples
 --------
     adsb-coverage 46.9480 7.4474 --ant-h 15 --alt-ft 1000,3000,10000,30000 -o bern.kml
-    adsb-coverage 46.9480 7.4474 --agl -o bas.kml        # basses altitudes, hauteurs sol
+    adsb-coverage 46.9480 7.4474 --agl -o low.kml        # low altitudes, heights above ground
 
-Dépendances : numpy, requests ; rasterio (champ lointain Copernicus / MNT local).
+Dependencies: numpy, requests; rasterio for the far field (Copernicus) and local GeoTIFFs.
 """
 import argparse
 import io
@@ -36,46 +36,46 @@ from xml.sax.saxutils import escape
 
 import numpy as np
 
-R_EARTH = 6371008.8  # m, rayon moyen
-FT = 0.3048
+R_EARTH = 6371008.8  # mean Earth radius (m)
+FT = 0.3048  # metres per foot
 STAC_ITEMS = "https://data.geo.admin.ch/api/stac/v0.9/collections/ch.swisstopo.swissalti3d/items"
 COP_URL = "https://copernicus-dem-30m.s3.amazonaws.com/{n}/{n}.tif"
 
 
-# ----------------------------------------------------------------------------- réseau
+# ----------------------------------------------------------------------------- network
+# Settings shared by all downloads; filled in from the command line. With proxies=None, requests falls back
+# on the HTTPS_PROXY / HTTP_PROXY environment variables.
 HTTP = {"proxies": None, "verify": True, "timeout": 30}
 
 
-def http_get(url, **kw):
-    """requests.get avec proxy / CA configurables (--proxy, --ca-bundle ; sinon variables HTTPS_PROXY, etc.)."""
+def http_get(url, **kwargs):
+    """requests.get with the proxy, CA bundle and timeout from HTTP."""
     import requests
 
-    kw.setdefault("timeout", HTTP["timeout"])
-    return requests.get(url, proxies=HTTP["proxies"], verify=HTTP["verify"], **kw)
+    kwargs.setdefault("timeout", HTTP["timeout"])
+    return requests.get(url, proxies=HTTP["proxies"], verify=HTTP["verify"], **kwargs)
 
 
 def network_help(exc):
-    return (f"Connexion impossible : {exc}\n"
-            "Pistes : (1) proxy -> --proxy http://utilisateur:mdp@hote:port ou variable HTTPS_PROXY ; "
-            "(2) inspection SSL -> --ca-bundle chemin/vers/ca.pem ; "
-            "(3) mode hors ligne -> télécharger les tuiles swissALTI3D (2 m, .xyz.zip) depuis un poste avec accès "
-            "et les placer dans un dossier passé via --tile-dir ; (4) --near-km 0 --dem mnt.tif.")
+    return (f"Connection failed: {exc}\n"
+            "Options: (1) proxy: --proxy http://user:password@host:port or the HTTPS_PROXY variable; "
+            "(2) SSL inspection: --ca-bundle path/to/ca.pem; "
+            "(3) offline: download the swissALTI3D tiles (2 m, .xyz.zip) on a machine with access and pass "
+            "their folder with --tile-dir; (4) --near-km 0 --dem terrain.tif.")
 
 
-# ----------------------------------------------------------------------------- géodésie
+# ----------------------------------------------------------------------------- geodesy
 def wgs84_to_lv95(lat, lon):
-    """WGS84 -> MN95/LV95 (formules approchées swisstopo, ~1 m en Suisse)."""
-    lat = np.asarray(lat, float)
-    lon = np.asarray(lon, float)
-    p = (lat * 3600 - 169028.66) / 10000
-    l = (lon * 3600 - 26782.5) / 10000
-    e = 2600072.37 + 211455.93 * l - 10938.51 * l * p - 0.36 * l * p**2 - 44.54 * l**3
-    n = 1200147.07 + 308807.95 * p + 3745.25 * l**2 + 76.63 * p**2 - 194.56 * l**2 * p + 119.79 * p**3
+    """WGS84 -> Swiss LV95 (E, N) with the approximate swisstopo formulae (about 1 m in Switzerland)."""
+    p = (np.asarray(lat, float) * 3600 - 169028.66) / 10000
+    lam = (np.asarray(lon, float) * 3600 - 26782.5) / 10000
+    e = 2600072.37 + 211455.93 * lam - 10938.51 * lam * p - 0.36 * lam * p**2 - 44.54 * lam**3
+    n = 1200147.07 + 308807.95 * p + 3745.25 * lam**2 + 76.63 * p**2 - 194.56 * lam**2 * p + 119.79 * p**3
     return e, n
 
 
 def destination(lat, lon, az_deg, dist_m):
-    """Point atteint depuis (lat, lon) à l'azimut et la distance donnés (sphère). Broadcast numpy."""
+    """Point reached from (lat, lon) along the given azimuth and distance on a sphere (numpy broadcasting)."""
     p1, l1 = math.radians(lat), math.radians(lon)
     th = np.radians(az_deg)
     d = dist_m / R_EARTH
@@ -84,15 +84,43 @@ def destination(lat, lon, az_deg, dist_m):
     return np.degrees(p2), (np.degrees(l2) + 540.0) % 360.0 - 180.0
 
 
-# ----------------------------------------------------------------------------- MNT : swissALTI3D
+# ----------------------------------------------------------------------------- terrain: swissALTI3D
+_CELLS = 500  # 2 m cells along one side of a 1 km tile
+_CELL_M = 2.0
+_FACTORS = (1, 2, 4, 5, 10, 20, 25, 50)  # decimation factors that divide a tile exactly
+_KEY = 100_000  # tile key = E_km * _KEY + N_km (both below 100 000)
+
+
+def decimate_xyz_zip(data, factor):
+    """Read a swissALTI3D 2 m .xyz.zip tile and average it over factor x factor cells (north at row 0)."""
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        name = next(n for n in z.namelist() if n.lower().endswith(".xyz"))
+        lines = z.read(name).decode("ascii", "ignore").splitlines()
+    if lines and not lines[0].lstrip()[:1].isdigit():
+        lines = lines[1:]  # "X Y Z" header
+    xyz = np.array(" ".join(lines).split(), dtype=float).reshape(-1, 3)
+    col = np.rint((xyz[:, 0] - xyz[:, 0].min()) / _CELL_M).astype(int)
+    row = np.rint((xyz[:, 1].max() - xyz[:, 1]) / _CELL_M).astype(int)
+    grid = np.full((_CELLS, _CELLS), np.nan)
+    grid[np.clip(row, 0, _CELLS - 1), np.clip(col, 0, _CELLS - 1)] = xyz[:, 2]
+    grid[grid < -500] = np.nan  # no-data
+    n = _CELLS // factor
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN blocks
+        return np.nanmean(grid.reshape(n, factor, n, factor), axis=(1, 3)).astype(np.float32)
+
+
 class SwissAlti3D:
-    """Tuiles 1 km swissALTI3D (2 m), décimées à `res_m` et mises en cache en .npy."""
+    """swissALTI3D 1 km tiles (2 m), decimated to about `res_m` and cached on disk as .npy files.
+
+    Missing tiles are downloaded through the swisstopo STAC API, or, with `tile_dir`, read from a folder of
+    .xyz.zip files downloaded by hand (offline mode, nothing is downloaded).
+    """
 
     def __init__(self, lat, lon, radius_m, res_m=50, cache_dir=None, workers=8, tile_dir=None):
-        valid = [f for f in (1, 2, 4, 5, 10, 20, 25, 50) if 500 % f == 0]
-        self.f = min(valid, key=lambda f: abs(f * 2 - res_m))
-        self.res = self.f * 2.0
-        self.n = 500 // self.f
+        self.factor = min(_FACTORS, key=lambda f: abs(f * _CELL_M - res_m))
+        self.res = self.factor * _CELL_M
+        self.n = _CELLS // self.factor
         self.cache = Path(cache_dir or Path.home() / ".cache" / "adsb_coverage" / "swissalti3d")
         self.cache.mkdir(parents=True, exist_ok=True)
         self.workers = workers
@@ -100,125 +128,119 @@ class SwissAlti3D:
         self.tiles = {}
         self._load(lat, lon, radius_m)
 
-    def _wanted(self, lat, lon, r):
+    @staticmethod
+    def _tiles_around(lat, lon, radius_m):
+        """(E_km, N_km) of the tiles that may lie within radius_m; this is the swisstopo tile id, e.g. 2485-1109."""
         e0, n0 = wgs84_to_lv95(lat, lon)
-        out = []
-        for tx in range(int((e0 - r) // 1000), int((e0 + r) // 1000) + 1):
-            for ty in range(int((n0 - r) // 1000), int((n0 + r) // 1000) + 1):
-                cx, cy = tx * 1000 + 500, ty * 1000 + 500
-                if math.hypot(cx - e0, cy - n0) <= r + 710:
-                    out.append((tx, ty))  # id swisstopo : E/1000 - N/1000, ex. 2485-1109
-        return out
+        half_diagonal = 710  # m, so that corner tiles are kept
+        return [(tx, ty)
+                for tx in range(int((e0 - radius_m) // 1000), int((e0 + radius_m) // 1000) + 1)
+                for ty in range(int((n0 - radius_m) // 1000), int((n0 + radius_m) // 1000) + 1)
+                if math.hypot(tx * 1000 + 500 - e0, ty * 1000 + 500 - n0) <= radius_m + half_diagonal]
 
-    def _path(self, tx, ty):
+    def _cache_path(self, tx, ty):
         return self.cache / f"{tx}-{ty}_{int(self.res)}m.npy"
 
-    def _list_items(self, bbox):
-        url, params, out = STAC_ITEMS, {"bbox": ",".join(f"{v:.6f}" for v in bbox), "limit": 100}, {}
-        while url:
-            r = http_get(url, params=params, timeout=60)
-            r.raise_for_status()
-            j = r.json()
-            for it in j.get("features", []):
-                _, year, key = it["id"].split("_")
-                href = next((a["href"] for k, a in it["assets"].items()
-                             if "_2_2056" in k and k.endswith(".xyz.zip")), None)
-                if href and (key not in out or year > out[key][0]):
-                    out[key] = (year, href)
-            url = next((l["href"] for l in j.get("links", []) if l.get("rel") == "next"), None)
-            params = None
-        return out
+    def _store(self, tx, ty, array):
+        np.save(self._cache_path(tx, ty), array)
+        self.tiles[tx * _KEY + ty] = array
 
-    def _decimate(self, zbytes):
-        with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
-            name = next(n for n in z.namelist() if n.lower().endswith(".xyz"))
-            text = z.read(name).decode("ascii", "ignore")
-        lines = text.splitlines()
-        if lines and not lines[0].lstrip()[:1].isdigit():
-            lines = lines[1:]  # en-tête « X Y Z »
-        a = np.array(" ".join(lines).split(), dtype=float).reshape(-1, 3)
-        ix = np.rint((a[:, 0] - a[:, 0].min()) / 2.0).astype(int)
-        iy = np.rint((a[:, 1].max() - a[:, 1]) / 2.0).astype(int)  # ligne 0 = nord
-        g = np.full((500, 500), np.nan)
-        g[np.clip(iy, 0, 499), np.clip(ix, 0, 499)] = a[:, 2]
-        g[g < -500] = np.nan
-        f = self.f
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            return np.nanmean(g.reshape(500 // f, f, 500 // f, f), axis=(1, 3)).astype(np.float32)
-
-    def _fetch(self, tile):
-        (tx, ty), (year, href) = tile
-        for attempt in range(3):
-            try:
-                r = http_get(href, timeout=120)
-                r.raise_for_status()
-                arr = self._decimate(r.content)
-                np.save(self._path(tx, ty), arr)
-                return (tx, ty), arr
-            except Exception as exc:  # noqa: BLE001
-                err = exc
-        print(f"  ! tuile {tx}-{ty} ({year}) échec : {err}", file=sys.stderr)
-        return (tx, ty), None
-
-    def _load(self, lat, lon, r):
-        want = self._wanted(lat, lon, r)
+    def _load(self, lat, lon, radius_m):
+        wanted = self._tiles_around(lat, lon, radius_m)
         missing = []
-        for tx, ty in want:
-            p = self._path(tx, ty)
-            if p.exists():
-                self.tiles[tx * 100000 + ty] = np.load(p)
+        for tx, ty in wanted:
+            path = self._cache_path(tx, ty)
+            if path.exists():
+                self.tiles[tx * _KEY + ty] = np.load(path)
             else:
                 missing.append((tx, ty))
-        if self.tile_dir and missing:  # tuiles .xyz.zip fournies manuellement
-            still = []
-            for tx, ty in missing:
-                f = next(iter(sorted(self.tile_dir.glob(f"*{tx}-{ty}_2_2056*.xyz.zip"))), None)
-                if f is None:
-                    still.append((tx, ty))
-                    continue
-                arr = self._decimate(f.read_bytes())
-                np.save(self._path(tx, ty), arr)
-                self.tiles[tx * 100000 + ty] = arr
-            missing = still
+        if missing and self.tile_dir:
+            missing = self._load_local(missing)
             if missing:
-                print(f"swissALTI3D : {len(missing)} tuile(s) absentes de --tile-dir", file=sys.stderr)
-                return
-        if not missing:
-            return
-        print(f"swissALTI3D : {len(want)} tuiles, {len(missing)} à télécharger…", file=sys.stderr)
-        dlat, dlon = r / 111_200, r / (111_200 * math.cos(math.radians(lat)))
+                print(f"swissALTI3D: {len(missing)} tile(s) not found in --tile-dir", file=sys.stderr)
+        elif missing:
+            self._download(lat, lon, radius_m, missing)
+        print(f"swissALTI3D: {len(self.tiles)}/{len(wanted)} tiles available", file=sys.stderr)
+
+    def _load_local(self, missing):
+        """Read tiles from tile_dir; return those that were not found."""
+        not_found = []
+        for tx, ty in missing:
+            path = next(iter(sorted(self.tile_dir.glob(f"*{tx}-{ty}_2_2056*.xyz.zip"))), None)
+            if path is None:
+                not_found.append((tx, ty))
+            else:
+                self._store(tx, ty, decimate_xyz_zip(path.read_bytes(), self.factor))
+        return not_found
+
+    def _download(self, lat, lon, radius_m, missing):
+        print(f"swissALTI3D: downloading {len(missing)} tiles...", file=sys.stderr)
+        dlat = radius_m / 111_200
+        dlon = radius_m / (111_200 * math.cos(math.radians(lat)))
         try:
             items = self._list_items((lon - dlon, lat - dlat, lon + dlon, lat + dlat))
         except Exception as exc:  # noqa: BLE001
             raise SystemExit(network_help(exc)) from None
         todo = [((tx, ty), items[f"{tx}-{ty}"]) for tx, ty in missing if f"{tx}-{ty}" in items]
-        with ThreadPoolExecutor(self.workers) as ex:
-            for (tx, ty), arr in ex.map(self._fetch, todo):
-                if arr is not None:
-                    self.tiles[tx * 100000 + ty] = arr
-        print(f"swissALTI3D : {len(self.tiles)}/{len(want)} tuiles disponibles", file=sys.stderr)
+        with ThreadPoolExecutor(self.workers) as pool:
+            for (tx, ty), array in pool.map(self._fetch, todo):
+                if array is not None:
+                    self._store(tx, ty, array)
+
+    @staticmethod
+    def _list_items(bbox):
+        """Most recent 2 m tile of each id in the bounding box: {"2485-1109": (year, url)}."""
+        url, params, tiles = STAC_ITEMS, {"bbox": ",".join(f"{v:.6f}" for v in bbox), "limit": 100}, {}
+        while url:
+            response = http_get(url, params=params, timeout=60)
+            response.raise_for_status()
+            page = response.json()
+            for item in page.get("features", []):
+                _, year, tile_id = item["id"].split("_")
+                href = next((a["href"] for name, a in item["assets"].items()
+                             if "_2_2056" in name and name.endswith(".xyz.zip")), None)
+                if href and (tile_id not in tiles or year > tiles[tile_id][0]):
+                    tiles[tile_id] = (year, href)
+            url = next((link["href"] for link in page.get("links", []) if link.get("rel") == "next"), None)
+            params = None  # the "next" link already carries the query
+        return tiles
+
+    def _fetch(self, tile):
+        (tx, ty), (year, href) = tile
+        for _ in range(3):
+            try:
+                response = http_get(href, timeout=120)
+                response.raise_for_status()
+                return (tx, ty), decimate_xyz_zip(response.content, self.factor)
+            except Exception as exc:  # noqa: BLE001
+                error = exc
+        print(f"  ! tile {tx}-{ty} ({year}) failed: {error}", file=sys.stderr)
+        return (tx, ty), None
 
     def sample(self, lat, lon):
+        """Elevation (m) at the given points; NaN where no tile is loaded."""
         e, n = wgs84_to_lv95(lat, lon)
         out = np.full(e.shape, np.nan)
-        tx, ty = np.floor(e / 1000).astype(np.int64), np.floor(n / 1000).astype(np.int64)
-        keys, inv = np.unique(tx * 100000 + ty, return_inverse=True)
-        inv = inv.reshape(e.shape)
-        for i, k in enumerate(keys):
-            t = self.tiles.get(int(k))
-            if t is None:
+        keys = np.floor(e / 1000).astype(np.int64) * _KEY + np.floor(n / 1000).astype(np.int64)
+        for key in np.unique(keys):
+            tile = self.tiles.get(int(key))
+            if tile is None:
                 continue
-            m = inv == i
-            col = np.clip(((e[m] - (k // 100000) * 1000) / self.res).astype(int), 0, self.n - 1)
-            row = np.clip((((k % 100000) * 1000 + 1000 - n[m]) / self.res).astype(int), 0, self.n - 1)
-            out[m] = t[row, col]
+            tx, ty = divmod(int(key), _KEY)
+            m = keys == key
+            col = np.clip(((e[m] - tx * 1000) / self.res).astype(int), 0, self.n - 1)
+            row = np.clip(((ty * 1000 + 1000 - n[m]) / self.res).astype(int), 0, self.n - 1)
+            out[m] = tile[row, col]
         return out
 
 
-# ----------------------------------------------------------------------------- MNT : GeoTIFF (WGS84)
+# ----------------------------------------------------------------------------- terrain: GeoTIFF (WGS84)
 class GeoTiffMosaic:
-    """Mosaïque de GeoTIFF en EPSG:4326 lus en basse résolution (overviews des COG)."""
+    """GeoTIFF terrain models in EPSG:4326 (local files or URLs), read at low resolution.
+
+    Cloud-optimised GeoTIFFs are read through their overviews, so a 400 km radius stays fast. Each block is
+    reduced with Resampling.max (conservative for obstruction), or with the average if rasterio refuses.
+    """
 
     def __init__(self, paths, bbox, res_m=300):
         import rasterio
@@ -226,231 +248,243 @@ class GeoTiffMosaic:
         from rasterio.windows import Window
 
         lon0, lat0, lon1, lat1 = bbox
-        self.chunks = []
-        env = rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif")
-        with env:
-            for p in paths:
+        self.chunks = []  # (west, north, cell width, cell height, array)
+        unavailable = 0
+        with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif"):
+            for path in paths:
                 try:
-                    ds = rasterio.open(p)
-                except Exception:  # noqa: BLE001  (tuile absente : mer, hors couverture)
+                    ds = rasterio.open(path)
+                except Exception:  # noqa: BLE001  (missing tile: sea, outside coverage, network error)
+                    unavailable += 1
                     continue
                 with ds:
                     if not (ds.crs and ds.crs.is_geographic):
-                        raise SystemExit(f"{p} : le MNT doit être en coordonnées géographiques (EPSG:4326).")
-                    b, t = ds.bounds, ds.transform
-                    w, e, s, n = max(lon0, b.left), min(lon1, b.right), max(lat0, b.bottom), min(lat1, b.top)
-                    if w >= e or s >= n:
+                        raise SystemExit(f"{path}: the terrain model must use geographic coordinates (EPSG:4326).")
+                    t = ds.transform
+                    west, east = max(lon0, ds.bounds.left), min(lon1, ds.bounds.right)
+                    south, north = max(lat0, ds.bounds.bottom), min(lat1, ds.bounds.top)
+                    if west >= east or south >= north:
                         continue
-                    c0, r0 = (~t) * (w, n)
-                    c1, r1 = (~t) * (e, s)
+                    c0, r0 = (~t) * (west, north)
+                    c1, r1 = (~t) * (east, south)
                     c0, r0 = max(int(math.floor(c0)), 0), max(int(math.floor(r0)), 0)
                     c1, r1 = min(int(math.ceil(c1)), ds.width), min(int(math.ceil(r1)), ds.height)
                     step_deg = res_m / 111_320
-                    ow = max(1, int(round((c1 - c0) * abs(t.a) / step_deg)))
-                    oh = max(1, int(round((r1 - r0) * abs(t.e) / step_deg)))
-                    win = Window(c0, r0, c1 - c0, r1 - r0)
+                    out_w = max(1, int(round((c1 - c0) * abs(t.a) / step_deg)))
+                    out_h = max(1, int(round((r1 - r0) * abs(t.e) / step_deg)))
+                    window = Window(c0, r0, c1 - c0, r1 - r0)
                     try:
-                        arr = ds.read(1, window=win, out_shape=(oh, ow), resampling=Resampling.max)
+                        array = ds.read(1, window=window, out_shape=(out_h, out_w), resampling=Resampling.max)
                     except Exception:  # noqa: BLE001
-                        arr = ds.read(1, window=win, out_shape=(oh, ow), resampling=Resampling.average)
-                    arr = arr.astype(np.float32)
+                        array = ds.read(1, window=window, out_shape=(out_h, out_w), resampling=Resampling.average)
+                    array = array.astype(np.float32)
                     if ds.nodata is not None:
-                        arr[arr == ds.nodata] = np.nan
-                    self.chunks.append((t.c + c0 * t.a, t.f + r0 * t.e, (c1 - c0) * t.a / ow,
-                                        (r1 - r0) * abs(t.e) / oh, arr))
-        print(f"MNT GeoTIFF : {len(self.chunks)} tuile(s) lue(s)", file=sys.stderr)
+                        array[array == ds.nodata] = np.nan
+                    self.chunks.append((t.c + c0 * t.a, t.f + r0 * t.e, (c1 - c0) * t.a / out_w,
+                                        (r1 - r0) * abs(t.e) / out_h, array))
+        print(f"GeoTIFF terrain: {len(self.chunks)} tile(s) read, {unavailable} unavailable", file=sys.stderr)
 
     def sample(self, lat, lon):
+        """Elevation (m) at the given points; NaN outside the tiles read."""
         out = np.full(lat.shape, np.nan)
-        for west, north, dx, dy, arr in self.chunks:
+        for west, north, dx, dy, array in self.chunks:
             col = np.floor((lon - west) / dx).astype(int)
             row = np.floor((north - lat) / dy).astype(int)
-            m = (col >= 0) & (col < arr.shape[1]) & (row >= 0) & (row < arr.shape[0]) & np.isnan(out)
-            out[m] = arr[row[m], col[m]]
+            m = (col >= 0) & (col < array.shape[1]) & (row >= 0) & (row < array.shape[0]) & np.isnan(out)
+            out[m] = array[row[m], col[m]]
         return out
 
 
 def copernicus_urls(bbox):
+    """URLs of the Copernicus GLO-30 1-degree tiles that cover the bounding box (lon0, lat0, lon1, lat1)."""
     lon0, lat0, lon1, lat1 = bbox
-    urls = []
-    for la in range(math.floor(lat0), math.floor(lat1) + 1):
-        for lo in range(math.floor(lon0), math.floor(lon1) + 1):
-            n = (f"Copernicus_DSM_COG_10_{'N' if la >= 0 else 'S'}{abs(la):02d}_00_"
-                 f"{'E' if lo >= 0 else 'W'}{abs(lo):03d}_00_DEM")
-            urls.append(COP_URL.format(n=n))
-    return urls
+    return [COP_URL.format(n=f"Copernicus_DSM_COG_10_{'N' if la >= 0 else 'S'}{abs(la):02d}_00_"
+                             f"{'E' if lo >= 0 else 'W'}{abs(lo):03d}_00_DEM")
+            for la in range(math.floor(lat0), math.floor(lat1) + 1)
+            for lo in range(math.floor(lon0), math.floor(lon1) + 1)]
 
 
 class Terrain:
-    """Chaîne de MNT : le premier qui renvoie une valeur gagne ; sinon 0 m (mer / inconnu)."""
+    """Chain of terrain sources: the first one that has a value wins; unknown points count as 0 m (sea)."""
 
     def __init__(self, sources):
-        self.sources = [s for s in sources if s is not None]
+        self.sources = list(sources)
+        self.unknown = 0.0  # share of the last sampled points that no source knew
 
     def sample(self, lat, lon):
         lat, lon = np.asarray(lat), np.asarray(lon)
         z = np.full(lat.shape, np.nan)
-        for s in self.sources:
+        for source in self.sources:
             m = np.isnan(z)
             if not m.any():
                 break
-            z[m] = s.sample(lat[m], lon[m])
+            z[m] = source.sample(lat[m], lon[m])
         self.unknown = float(np.isnan(z).mean())
         return np.nan_to_num(z, nan=0.0)
 
 
-# ----------------------------------------------------------------------------- modèle de propagation
-def compute_coverage(terrain, lat, lon, ant_h, heights_m, rmax, ds, az_step, k, ground=None, agl=False):
+# ----------------------------------------------------------------------------- propagation model
+def compute_coverage(terrain, lat, lon, ant_h, heights_m, rmax, step, az_step, k, ground=None, agl=False):
     """
-    Visibilité de l'antenne le long de rayons radiaux -> masque booléen vis[alt, azimut, distance].
+    Visibility of aircraft along radial profiles around the antenna.
 
-    Repère « terre aplatie » : un point à la distance d et à la hauteur h a la hauteur apparente
-    h - d²/(2·k·R). Un aéronef est visible si la pente antenne->aéronef est >= à la pente maximale
-    du relief rencontré jusque-là (relief au point lui-même inclus).
-    - agl=False : hauteurs = altitudes AMSL constantes ; la visibilité est monotone avec la distance.
-    - agl=True  : hauteurs = hauteur au-dessus du sol local (l'aéronef suit le relief) ; la visibilité
-      n'est plus monotone (un aéronef peut réapparaître au-delà d'une crête, dans une vallée plus haute).
+    Returns (azimuths, distances, visible, ground_m) where visible[level, azimuth, distance] is True when an
+    aircraft at that level and distance is in line of sight of the antenna.
+
+    In the "flat Earth" frame a point at distance d and height h has the apparent height h - d^2 / (2 k R).
+    An aircraft is visible when the slope from the antenna to it is at least the steepest slope to any terrain
+    met so far (including the terrain under the aircraft).
+    - AMSL levels (agl=False): constant altitudes. Visibility ends at the first obstruction.
+    - AGL levels (agl=True): heights above the local ground, the aircraft follows the relief. Visibility is
+      no longer monotonic with distance: an aircraft can reappear beyond a ridge, over a higher valley.
     """
-    re_eff = k * R_EARTH
     az = np.arange(0, 360, az_step, dtype=float)
-    d = np.arange(ds, rmax + ds, ds, dtype=float)
-    plat, plon = destination(lat, lon, az[:, None], d[None, :])
-    z0 = float(terrain.sample(np.array([lat]), np.array([lon]))[0]) if ground is None else ground
-    z = terrain.sample(plat, plon)
-    h0 = z0 + ant_h
-    bulge = d**2 / (2 * re_eff)
-    m_terr = np.maximum.accumulate((z - bulge - h0) / d[None, :], axis=1)
-    vis = np.empty((len(heights_m), len(az), len(d)), dtype=bool)
+    d = np.arange(step, rmax + step, step, dtype=float)
+    points_lat, points_lon = destination(lat, lon, az[:, None], d[None, :])
+    ground_m = float(terrain.sample(np.array([lat]), np.array([lon]))[0]) if ground is None else ground
+    z = terrain.sample(points_lat, points_lon)
+    antenna = ground_m + ant_h
+    bulge = d**2 / (2 * k * R_EARTH)
+    steepest_terrain = np.maximum.accumulate((z - bulge - antenna) / d, axis=1)
+    visible = np.empty((len(heights_m), len(az), len(d)), dtype=bool)
     for i, h in enumerate(heights_m):
-        top = (z + h) if agl else h  # altitude AMSL de l'aéronef : (az, d) ou scalaire
-        slope_ac = (top - bulge[None, :] - h0) / d[None, :]
-        vis[i] = slope_ac >= m_terr
-    return az, d, vis, z0
+        aircraft = z + h if agl else h  # altitude AMSL of the aircraft
+        visible[i] = (aircraft - bulge - antenna) / d >= steepest_terrain
+    return az, d, visible, ground_m
 
 
-def continuous_range(vis, d):
-    """Distance jusqu'au premier masquage (couverture continue depuis le récepteur), par azimut."""
-    blocked = ~vis
-    first = np.where(blocked.any(axis=-1), blocked.argmax(axis=-1), vis.shape[-1])
+def continuous_range(visible, d):
+    """Distance to the first obstruction along each azimuth: the continuous coverage from the receiver."""
+    blocked = ~visible
+    first = np.where(blocked.any(axis=-1), blocked.argmax(axis=-1), visible.shape[-1])
     return np.where(first > 0, d[np.clip(first - 1, 0, len(d) - 1)], 0.0)
 
 
-def max_visible_range(vis, d):
-    """Distance du point visible le plus lointain, par azimut (0 si aucun)."""
-    last = vis.shape[-1] - 1 - vis[..., ::-1].argmax(axis=-1)
-    return np.where(vis.any(axis=-1), d[last], 0.0)
+def max_visible_range(visible, d):
+    """Distance of the farthest visible point along each azimuth (0 if none), even behind a ridge."""
+    last = visible.shape[-1] - 1 - visible[..., ::-1].argmax(axis=-1)
+    return np.where(visible.any(axis=-1), d[last], 0.0)
 
 
-def coverage_ranges(terrain, lat, lon, ant_h, alts_m, rmax, ds, az_step, k, ground=None, agl=False):
-    """Compatibilité : (azimuts, portée continue [alt, azimut] en m, altitude du sol au récepteur)."""
-    az, d, vis, z0 = compute_coverage(terrain, lat, lon, ant_h, alts_m, rmax, ds, az_step, k, ground, agl)
-    return az, np.stack([continuous_range(v, d) for v in vis]), z0
+def visible_runs(visible, d, step, min_len=2):
+    """Contiguous visible stretches for one level (array [azimuth, distance]).
 
-
-def visible_runs(vis_alt, d, ds, min_len=2):
-    """Segments visibles contigus par azimut : (indice azimut, d_debut, d_fin) en m, longueur >= min_len pas."""
-    pad = np.zeros((vis_alt.shape[0], 1), dtype=int)
-    diff = np.diff(np.concatenate([pad, vis_alt.astype(int), pad], axis=1), axis=1)
-    (ia, st), (_, en) = np.nonzero(diff == 1), np.nonzero(diff == -1)
-    keep = (en - st) >= min_len
-    ia, st, en = ia[keep], st[keep], en[keep]
-    return ia, d[st] - ds / 2, d[en - 1] + ds / 2
+    Returns (azimuth indices, start distances, end distances) in metres, for stretches of at least
+    min_len samples.
+    """
+    pad = np.zeros((visible.shape[0], 1), dtype=int)
+    edges = np.diff(np.concatenate([pad, visible.astype(int), pad], axis=1), axis=1)
+    (rows, starts), (_, ends) = np.nonzero(edges == 1), np.nonzero(edges == -1)  # row-major: starts and ends pair up
+    keep = (ends - starts) >= min_len
+    rows, starts, ends = rows[keep], starts[keep], ends[keep]
+    return rows, d[starts] - step / 2, d[ends - 1] + step / 2
 
 
 # ----------------------------------------------------------------------------- KML
-def _colors(n):
+def _polygon(ring, tessellate=False):
+    """KML polygon clamped to the ground; ring is a list of (lon, lat) and is closed automatically."""
+    coords = " ".join(f"{x:.6f},{y:.6f},0" for x, y in list(ring) + [ring[0]])
+    return (f"<Polygon>{'<tessellate>1</tessellate>' if tessellate else ''}<altitudeMode>clampToGround</altitudeMode>"
+            f"<outerBoundaryIs><LinearRing><coordinates>{coords}</coordinates></LinearRing></outerBoundaryIs></Polygon>")
+
+
+def _level_colours(n):
+    """n colours (r, g, b) from red (first level) through green to blue (last level)."""
     for i in range(n):
         t = i / max(n - 1, 1)
         yield int(255 * t), int(200 * (1 - abs(2 * t - 1)) + 55), int(255 * (1 - t))
 
 
-def write_kml(path, lat, lon, z0, ant_h, az, d, vis, heights_ft, k, name, agl=False, az_step=1.0, ds=250.0):
-    n = len(heights_ft)
-    ref = "AGL (hauteur sol)" if agl else "AMSL"
-    cont = np.stack([continuous_range(v, d) for v in vis])
-    vmax = np.stack([max_visible_range(v, d) for v in vis])
+def write_kml(path, lat, lon, ground_m, ant_h, az, d, visible, levels_ft, k, agl=False, az_step=1.0, step=250.0):
+    """Write one KML layer per level; return (continuous range, max visible range), each [level, azimuth] in m.
+
+    AMSL levels are drawn as the outline of the continuous coverage; AGL levels as the visible sectors,
+    which may be fragmented in mountainous terrain.
+    """
+    reference = "AGL" if agl else "AMSL"
+    continuous = np.stack([continuous_range(v, d) for v in visible])
+    farthest = np.stack([max_visible_range(v, d) for v in visible])
     out = ['<?xml version="1.0" encoding="UTF-8"?>',
            '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>',
-           f"<name>{escape(name)}</name>",
-           f"<description>Couverture LOS théorique, k={k:.4f}, antenne {ant_h:g} m AGL "
-           f"(sol {z0:.0f} m). Niveaux en {ref}.</description>"]
-    for i, (r, g, b) in enumerate(_colors(n)):
+           f"<name>ADS-B/ADS-L coverage {lat:.4f}, {lon:.4f}</name>",
+           f"<description>Theoretical line-of-sight coverage, k={k:.4f}, antenna {ant_h:g} m AGL "
+           f"(ground {ground_m:.0f} m). Levels in {reference}"
+           f"{' (height above ground)' if agl else ''}.</description>"]
+    for i, (r, g, b) in enumerate(_level_colours(len(levels_ft))):
         out.append(f'<Style id="s{i}"><LineStyle><color>ff{b:02x}{g:02x}{r:02x}</color><width>2</width></LineStyle>'
                    f'<PolyStyle><color>{"55" if agl else "33"}{b:02x}{g:02x}{r:02x}</color>'
                    f'<outline>{0 if agl else 1}</outline></PolyStyle></Style>')
     out.append('<Style id="rx"><IconStyle><scale>1.2</scale></IconStyle></Style>')
-    out.append(f'<Placemark><name>Récepteur</name><styleUrl>#rx</styleUrl><description>Sol {z0:.0f} m, '
-               f'antenne +{ant_h:g} m</description><Point><coordinates>{lon:.6f},{lat:.6f},0</coordinates></Point></Placemark>')
-    out.append("<Folder><name>Couverture par niveau</name>")
-    for i in reversed(range(n)):  # niveaux hauts dessous, bas dessus
-        frac = vis[i].mean()
-        label = (f"{heights_ft[i]:g} ft {ref} - continue max {cont[i].max() / 1000:.0f} km, "
-                 f"visible max {vmax[i].max() / 1000:.0f} km")
+    out.append(f'<Placemark><name>Receiver</name><styleUrl>#rx</styleUrl><description>Ground {ground_m:.0f} m, '
+               f'antenna +{ant_h:g} m</description><Point><coordinates>{lon:.6f},{lat:.6f},0</coordinates></Point></Placemark>')
+    out.append("<Folder><name>Coverage by level</name>")
+    for i in reversed(range(len(levels_ft))):  # high levels underneath, low levels on top
+        label = (f"{levels_ft[i]:g} ft {reference} - continuous max {continuous[i].max() / 1000:.0f} km, "
+                 f"visible max {farthest[i].max() / 1000:.0f} km")
         if agl:
-            ia, d0, d1 = visible_runs(vis[i], d, ds)
-            h = az_step / 2
-            polys = []
-            for a_i, r0, r1 in zip(ia, d0, d1):
-                a0, a1 = az[a_i] - h, az[a_i] + h
-                la = [destination(lat, lon, x, y) for x, y in ((a0, r0), (a1, r0), (a1, r1), (a0, r1))]
-                ring = [(float(p[1]), float(p[0])) for p in la]
-                ring.append(ring[0])
-                polys.append("<Polygon><altitudeMode>clampToGround</altitudeMode><outerBoundaryIs><LinearRing><coordinates>"
-                             + " ".join(f"{x:.5f},{y:.5f},0" for x, y in ring) + "</coordinates></LinearRing></outerBoundaryIs></Polygon>")
-            if not polys:
+            rows, starts, ends = visible_runs(visible[i], d, step)
+            if len(rows) == 0:
                 continue
-            out.append(f'<Placemark><name>{escape(label)}</name><description>{frac:.1%} des points échantillonnés visibles'
-                       f'</description><styleUrl>#s{i}</styleUrl><MultiGeometry>{"".join(polys)}</MultiGeometry></Placemark>')
+            half = az_step / 2
+            sectors = []
+            for row, r0, r1 in zip(rows, starts, ends):
+                a0, a1 = az[row] - half, az[row] + half
+                corners = [destination(lat, lon, a, r) for a, r in ((a0, r0), (a1, r0), (a1, r1), (a0, r1))]
+                sectors.append(_polygon([(float(c[1]), float(c[0])) for c in corners]))
+            geometry = f"<MultiGeometry>{''.join(sectors)}</MultiGeometry>"
+            description = f"<description>{visible[i].mean():.1%} of sampled points visible</description>"
         else:
-            rr = cont[i]
-            pl, pn = destination(lat, lon, az, rr)
-            pl, pn = np.where(rr > 0, pl, lat), np.where(rr > 0, pn, lon)
-            ring = list(zip(pn, pl)) + [(pn[0], pl[0])]
-            coords = " ".join(f"{x:.6f},{y:.6f},0" for x, y in ring)
-            out.append(f'<Placemark><name>{escape(label)}</name><styleUrl>#s{i}</styleUrl><Polygon><tessellate>1</tessellate>'
-                       f'<altitudeMode>clampToGround</altitudeMode><outerBoundaryIs><LinearRing><coordinates>{coords}'
-                       f'</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>')
+            reach = continuous[i]
+            plat, plon = destination(lat, lon, az, reach)
+            plat, plon = np.where(reach > 0, plat, lat), np.where(reach > 0, plon, lon)
+            geometry = _polygon(list(zip(plon, plat)), tessellate=True)
+            description = ""
+        out.append(f"<Placemark><name>{escape(label)}</name>{description}<styleUrl>#s{i}</styleUrl>{geometry}</Placemark>")
     out.append("</Folder></Document></kml>")
     Path(path).write_text("\n".join(out), encoding="utf-8")
-    return cont, vmax
+    return continuous, farthest
 
 
-# ----------------------------------------------------------------------------- CLI
-def main(argv=None):
+# ----------------------------------------------------------------------------- command line
+def build_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("lat", type=float, help="latitude WGS84 (degrés)")
-    ap.add_argument("lon", type=float, help="longitude WGS84 (degrés)")
-    ap.add_argument("-o", "--output", default="coverage.kml")
-    ap.add_argument("--ant-h", type=float, default=10.0, help="hauteur de l'antenne au-dessus du sol (m)")
-    ap.add_argument("--ground-m", type=float, default=None, help="altitude du sol au récepteur (sinon lue dans le MNT)")
+    ap.add_argument("lat", type=float, help="latitude, WGS84 decimal degrees")
+    ap.add_argument("lon", type=float, help="longitude, WGS84 decimal degrees")
+    ap.add_argument("-o", "--output", default="coverage.kml", help="output KML file")
+    ap.add_argument("--ant-h", type=float, default=10.0, help="antenna height above ground (m)")
+    ap.add_argument("--ground-m", type=float, default=None, help="ground elevation at the receiver (default: read from the terrain model)")
     ap.add_argument("--agl", action="store_true",
-                    help="niveaux en hauteur au-dessus du sol local (basses altitudes) au lieu d'altitudes AMSL")
+                    help="levels are heights above the local ground (low altitudes) instead of altitudes AMSL")
     ap.add_argument("--alt-ft", default=None,
-                    help="niveaux en ft, séparés par des virgules (défaut AMSL : 1000..30000 ; défaut AGL : 100..3000)")
-    ap.add_argument("--k", type=float, default=4 / 3, help="facteur de rayon terrestre effectif (défaut 4/3)")
-    ap.add_argument("--rmax-km", type=float, default=None, help="portée max calculée (défaut 400 AMSL, 150 AGL)")
-    ap.add_argument("--step-m", type=float, default=None, help="pas le long des rayons (défaut 250 m AMSL, 100 m AGL)")
-    ap.add_argument("--az-step", type=float, default=1.0, help="pas en azimut (degrés)")
-    ap.add_argument("--near-km", type=float, default=10.0, help="rayon de la zone swissALTI3D (0 = désactivé)")
-    ap.add_argument("--near-res-m", type=float, default=50.0, help="résolution après décimation de swissALTI3D (20 = plus fin)")
-    ap.add_argument("--far", choices=["copernicus", "none"], default="copernicus", help="MNT hors zone proche")
-    ap.add_argument("--far-res-m", type=float, default=300.0)
-    ap.add_argument("--dem", nargs="*", default=None, help="GeoTIFF(s) EPSG:4326 locaux (remplacent Copernicus)")
-    ap.add_argument("--cache-dir", default=None)
-    ap.add_argument("--tile-dir", default=None, help="dossier de tuiles swissALTI3D .xyz.zip téléchargées à la main")
-    ap.add_argument("--proxy", default=None, help="proxy HTTP(S), ex. http://hote:8080")
-    ap.add_argument("--ca-bundle", default=None, help="certificat(s) CA PEM (proxy avec inspection SSL)")
-    ap.add_argument("--timeout", type=float, default=30.0, help="délai de connexion (s)")
-    ap.add_argument("--flat", action="store_true", help="terrain plat à 0 m (horizon radio théorique, pour test)")
-    a = ap.parse_args(argv)
+                    help="comma-separated levels in ft (default AMSL: 1000..30000; default AGL: 100..3000)")
+    ap.add_argument("--k", type=float, default=4 / 3, help="effective Earth radius factor (default 4/3)")
+    ap.add_argument("--rmax-km", type=float, default=None, help="maximum range computed (default 400 AMSL, 150 AGL)")
+    ap.add_argument("--step-m", type=float, default=None, help="sampling step along each profile (default 250 m AMSL, 100 m AGL)")
+    ap.add_argument("--az-step", type=float, default=1.0, help="azimuth step (degrees)")
+    ap.add_argument("--near-km", type=float, default=10.0, help="radius of the swissALTI3D zone (0 = disabled)")
+    ap.add_argument("--near-res-m", type=float, default=50.0, help="swissALTI3D resolution after decimation (m); 20 = finer")
+    ap.add_argument("--far", choices=["copernicus", "none"], default="copernicus", help="terrain beyond the near zone")
+    ap.add_argument("--far-res-m", type=float, default=300.0, help="resolution of the far terrain (m)")
+    ap.add_argument("--dem", nargs="*", default=None, help="local EPSG:4326 GeoTIFF(s), used instead of Copernicus")
+    ap.add_argument("--cache-dir", default=None, help="cache folder for swissALTI3D tiles")
+    ap.add_argument("--tile-dir", default=None, help="folder of swissALTI3D .xyz.zip tiles downloaded by hand (offline)")
+    ap.add_argument("--proxy", default=None, help="HTTP(S) proxy, e.g. http://host:8080")
+    ap.add_argument("--ca-bundle", default=None, help="CA certificate(s) in PEM format (proxy with SSL inspection)")
+    ap.add_argument("--timeout", type=float, default=30.0, help="connection timeout (s)")
+    ap.add_argument("--flat", action="store_true", help="flat terrain at 0 m (theoretical radio horizon, for testing)")
+    return ap
+
+
+def main(argv=None):
+    a = build_parser().parse_args(argv)
 
     if a.proxy:
         HTTP["proxies"] = {"http": a.proxy, "https": a.proxy}
     if a.ca_bundle:
         HTTP["verify"] = a.ca_bundle
     HTTP["timeout"] = a.timeout
-    alt_txt = a.alt_ft or ("100,300,500,1000,2000,3000" if a.agl else "1000,3000,6000,10000,20000,30000")
-    heights_ft = [float(x) for x in alt_txt.split(",")]
+
+    levels_ft = [float(x) for x in (a.alt_ft or ("100,300,500,1000,2000,3000" if a.agl else "1000,3000,6000,10000,20000,30000")).split(",")]
     rmax = (a.rmax_km or (150.0 if a.agl else 400.0)) * 1000
     step = a.step_m or (100.0 if a.agl else 250.0)
     dlat = rmax / 111_200
@@ -461,26 +495,28 @@ def main(argv=None):
     if not a.flat:
         if a.near_km > 0:
             sources.append(SwissAlti3D(a.lat, a.lon, a.near_km * 1000, a.near_res_m, a.cache_dir, tile_dir=a.tile_dir))
-        if a.dem:
-            sources.append(GeoTiffMosaic(a.dem, bbox, a.far_res_m))
-        elif a.far == "copernicus":
-            sources.append(GeoTiffMosaic(copernicus_urls(bbox), bbox, a.far_res_m))
+        if a.dem or a.far == "copernicus":
+            try:
+                sources.append(GeoTiffMosaic(a.dem or copernicus_urls(bbox), bbox, a.far_res_m))
+            except ImportError:
+                raise SystemExit("rasterio is required for the far terrain: pip install rasterio "
+                                 "(or use --far none to rely on swissALTI3D only).") from None
     terrain = Terrain(sources)
 
-    az, d, vis, z0 = compute_coverage(terrain, a.lat, a.lon, a.ant_h, [f * FT for f in heights_ft], rmax,
-                                      step, a.az_step, a.k, a.ground_m, a.agl)
-    if getattr(terrain, "unknown", 0) > 0.02 and not a.flat:
-        print(f"Attention : {terrain.unknown:.0%} des points sans donnée de relief (traités à 0 m).", file=sys.stderr)
+    az, d, visible, ground_m = compute_coverage(terrain, a.lat, a.lon, a.ant_h, [f * FT for f in levels_ft], rmax,
+                                                step, a.az_step, a.k, a.ground_m, a.agl)
+    if terrain.unknown > 0.02 and not a.flat:
+        print(f"Warning: {terrain.unknown:.0%} of the points have no terrain data (treated as 0 m).", file=sys.stderr)
 
-    cont, vmax = write_kml(a.output, a.lat, a.lon, z0, a.ant_h, az, d, vis, heights_ft, a.k,
-                           f"Couverture ADS-B/ADS-L {a.lat:.4f}, {a.lon:.4f}", a.agl, a.az_step, step)
-    ref = "AGL" if a.agl else "AMSL"
-    print(f"Sol récepteur : {z0:.0f} m ; antenne : {z0 + a.ant_h:.0f} m AMSL ; k = {a.k:.4f} ; niveaux {ref}")
-    print(f"{'Niveau':>11} | portée continue km : {'min':>5} {'moy':>5} {'max':>5} | visible max | points visibles")
-    for f, r, vm, v in zip(heights_ft, cont, vmax, vis):
-        print(f"{f:>7g} ft  |{'':>21}{r.min() / 1000:5.1f} {r.mean() / 1000:5.1f} {r.max() / 1000:5.1f} | "
-              f"{vm.max() / 1000:8.1f} km | {v.mean():8.1%}")
-    print(f"KML : {a.output}")
+    continuous, farthest = write_kml(a.output, a.lat, a.lon, ground_m, a.ant_h, az, d, visible, levels_ft, a.k,
+                                     a.agl, a.az_step, step)
+    reference = "AGL" if a.agl else "AMSL"
+    print(f"Receiver ground: {ground_m:.0f} m; antenna: {ground_m + a.ant_h:.0f} m AMSL; k = {a.k:.4f}; levels in {reference}")
+    print(f"{'Level':>9} | continuous range (km): {'min':>5} {'mean':>5} {'max':>5} | {'max visible':>11} | {'visible':>7}")
+    for ft, cont, far, vis in zip(levels_ft, continuous, farthest, visible):
+        print(f"{ft:>6g} ft | {'':>22} {cont.min() / 1000:5.1f} {cont.mean() / 1000:5.1f} {cont.max() / 1000:5.1f} | "
+              f"{far.max() / 1000:8.1f} km | {vis.mean():7.1%}")
+    print(f"KML: {a.output}")
 
 
 if __name__ == "__main__":

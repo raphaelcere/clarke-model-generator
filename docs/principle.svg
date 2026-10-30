@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 420" width="900" height="420" font-family="Helvetica, Arial, sans-serif">
-  <title>Principe : un avion est reçu s'il est en vue directe de l'antenne</title>
+<svg xmlns="http://www.w3.org/2000/svg" lang="en" viewBox="0 0 900 420" width="900" height="420" font-family="Helvetica, Arial, sans-serif">
+  <title>Principle: an aircraft is received if it is in direct line of sight of the antenna</title>
   <defs>
     <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#cfe6fb"/><stop offset="1" stop-color="#f4f9ff"/>
@@ -11,46 +11,46 @@
     </g>
   </defs>
   <rect width="900" height="420" fill="url(#sky)"/>
-  <text x="450" y="26" text-anchor="middle" font-size="19" font-weight="bold" fill="#1b2a38">Un avion est reçu s'il est en vue directe de l'antenne</text>
+  <text x="450" y="26" text-anchor="middle" font-size="19" font-weight="bold" fill="#1b2a38">An aircraft is received if it is in direct line of sight of the antenna</text>
 
-  <!-- zone d'ombre derrière la montagne -->
+  <!-- shadow zone behind the mountain -->
   <polygon points="480,170 800,63 800,330 700,330" fill="#e53935" fill-opacity="0.16"/>
-  <text x="745" y="170" text-anchor="middle" font-size="14" font-weight="bold" fill="#b71c1c">Zone d'ombre</text>
-  <text x="745" y="188" text-anchor="middle" font-size="12" fill="#b71c1c">(aucune réception)</text>
+  <text x="745" y="170" text-anchor="middle" font-size="14" font-weight="bold" fill="#b71c1c">Shadow zone</text>
+  <text x="745" y="188" text-anchor="middle" font-size="12" fill="#b71c1c">(no reception)</text>
 
-  <!-- relief -->
+  <!-- terrain -->
   <path d="M0,330 L250,330 L480,170 L700,330 L900,330 L900,420 L0,420 Z" fill="#7a8a5b"/>
   <path d="M250,330 L480,170 L700,330 Z" fill="#8d7b68"/>
   <path d="M0,330 L250,330 L480,170 L700,330 L900,330" fill="none" stroke="#4b5a36" stroke-width="2"/>
-  <text x="480" y="205" text-anchor="middle" font-size="14" font-weight="bold" fill="#fff">Montagne</text>
+  <text x="480" y="205" text-anchor="middle" font-size="14" font-weight="bold" fill="#fff">Mountain</text>
 
-  <!-- antenne -->
+  <!-- antenna -->
   <line x1="90" y1="330" x2="90" y2="300" stroke="#263238" stroke-width="4"/>
   <circle cx="90" cy="298" r="5" fill="#d32f2f"/>
   <path d="M100,288 q10,10 0,20" fill="none" stroke="#d32f2f" stroke-width="2"/>
   <path d="M108,282 q16,16 0,32" fill="none" stroke="#d32f2f" stroke-width="2" opacity="0.7"/>
-  <text x="90" y="360" text-anchor="middle" font-size="14" font-weight="bold" fill="#1b2a38">Récepteur</text>
+  <text x="90" y="360" text-anchor="middle" font-size="14" font-weight="bold" fill="#1b2a38">Receiver</text>
   <text x="90" y="378" text-anchor="middle" font-size="12" fill="#1b2a38">ADS-B / ADS-L</text>
 
-  <!-- ligne de vue limite (rasant la crête) -->
+  <!-- limiting line of sight (grazing the ridge) -->
   <line x1="90" y1="300" x2="800" y2="63" stroke="#e53935" stroke-width="1.5" stroke-dasharray="3 5"/>
 
-  <!-- avion proche, bas : reçu -->
+  <!-- nearby low aircraft: received -->
   <line x1="90" y1="300" x2="200" y2="255" stroke="#2e7d32" stroke-width="3"/>
   <use href="#plane" x="200" y="255"/>
-  <text x="200" y="232" text-anchor="middle" font-size="13" font-weight="bold" fill="#2e7d32">Reçu</text>
+  <text x="200" y="232" text-anchor="middle" font-size="13" font-weight="bold" fill="#2e7d32">Received</text>
 
-  <!-- avion haut : reçu -->
+  <!-- high aircraft: received -->
   <line x1="90" y1="300" x2="700" y2="70" stroke="#2e7d32" stroke-width="3"/>
   <use href="#plane" x="700" y="70"/>
-  <text x="700" y="50" text-anchor="middle" font-size="13" font-weight="bold" fill="#2e7d32">Reçu : assez haut pour passer au-dessus</text>
+  <text x="700" y="50" text-anchor="middle" font-size="13" font-weight="bold" fill="#2e7d32">Received: high enough to clear the mountain</text>
 
-  <!-- avion bas derrière la montagne : masqué -->
+  <!-- low aircraft behind the mountain: hidden -->
   <line x1="90" y1="300" x2="310" y2="288" stroke="#c62828" stroke-width="3" stroke-dasharray="7 5"/>
   <line x1="310" y1="288" x2="640" y2="270" stroke="#c62828" stroke-width="1.5" stroke-dasharray="2 6" opacity="0.6"/>
   <g stroke="#c62828" stroke-width="4"><line x1="302" y1="280" x2="318" y2="296"/><line x1="318" y1="280" x2="302" y2="296"/></g>
   <use href="#plane" x="640" y="270" opacity="0.55"/>
-  <text x="602" y="246" text-anchor="start" font-size="13" font-weight="bold" fill="#c62828">Non reçu : caché par la montagne</text>
+  <text x="602" y="246" text-anchor="start" font-size="13" font-weight="bold" fill="#c62828">Not received: hidden by the mountain</text>
 
-  <text x="450" y="405" text-anchor="middle" font-size="12" fill="#e8f0e0">Schéma illustratif. Plus l'avion vole haut, plus il est visible de loin.</text>
+  <text x="450" y="405" text-anchor="middle" font-size="12" fill="#e8f0e0">Illustrative diagram. The higher an aircraft flies, the farther away it can be seen.</text>
 </svg>

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "adsb-coverage"
 version = "0.1.0"
-description = "Couverture de réception théorique (LOS, relief, rayon terrestre effectif) d'un récepteur fixe ADS-B / ADS-L, sortie KML"
+description = "Theoretical reception coverage (line of sight, terrain, effective Earth radius) of a fixed ADS-B / ADS-L receiver, KML output"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = ["numpy>=1.23", "requests>=2.28"]

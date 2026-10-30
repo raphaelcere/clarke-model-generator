@@ -1,7 +1,7 @@
-"""Couverture de réception théorique d'un récepteur ADS-B / ADS-L fixe (LOS, relief, k-factor)."""
+"""Theoretical reception coverage of a fixed ADS-B / ADS-L ground receiver (line of sight, terrain, k-factor)."""
 from .core import (  # noqa: F401
-    SwissAlti3D, GeoTiffMosaic, Terrain, compute_coverage, continuous_range,
-    max_visible_range, coverage_ranges, visible_runs, write_kml, wgs84_to_lv95, destination, main,
+    GeoTiffMosaic, SwissAlti3D, Terrain, compute_coverage, continuous_range, copernicus_urls,
+    decimate_xyz_zip, destination, main, max_visible_range, visible_runs, wgs84_to_lv95, write_kml,
 )
 
 __version__ = "0.1.0"
