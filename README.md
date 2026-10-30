@@ -200,4 +200,6 @@ pip install -e ".[dev]"
 pytest
 ```
 
+Les tests sont aussi lancés automatiquement par GitHub Actions (workflow « Tests ») à chaque `push` sur `main`.
+
 Licence : à définir.
