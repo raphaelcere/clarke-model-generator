@@ -148,3 +148,78 @@ def test_cli_writes_a_valid_kml(tmp_path, flags, capsys):
     root = ET.parse(out).getroot()
     assert len(root.findall(f".//{KML}Polygon")) > 0
     assert "KML:" in capsys.readouterr().out
+
+
+# ----------------------------------------------------------------------------- fading (Clarke 1968)
+def test_free_space_loss_at_1090_mhz_and_100_km():
+    link = ac.LinkBudget(freq_mhz=1090, eirp_dbm=0, rx_gain_dbi=0, sensitivity_dbm=-84)
+    assert abs(link.mean_power_dbm(100e3) - (-133.2)) < 0.1
+
+
+def test_link_budget_adds_gain_and_subtracts_losses():
+    base = ac.LinkBudget(1090, 51, 0, -84).mean_power_dbm(50e3)
+    assert ac.LinkBudget(1090, 51, 3, -84, losses_db=2).mean_power_dbm(50e3) == pytest.approx(base + 1)
+
+
+def test_rayleigh_probability_closed_form():
+    for margin_db in (-10.0, 0.0, 10.0):
+        assert ac.reception_probability(margin_db) == pytest.approx(math.exp(-(10 ** (-margin_db / 10))))
+
+
+def test_rice_probability_against_rayleigh():
+    pytest.importorskip("scipy")
+    margins = np.array([-5.0, 0.0, 5.0])
+    assert ac.reception_probability(margins, k_db=-60) == pytest.approx(ac.reception_probability(margins), rel=1e-3)
+    assert ac.reception_probability(3.0, k_db=10) > ac.reception_probability(3.0)  # a direct wave helps above the threshold
+    assert ac.reception_probability(-10.0, k_db=10) < ac.reception_probability(-10.0)  # and hurts below it
+    assert np.all(np.diff(ac.reception_probability(np.linspace(-20, 20, 50), k_db=6)) > 0)
+
+
+def test_slant_range():
+    assert ac.slant_range(10.0, 1010.0, 0.0) == pytest.approx(1000.0)
+    assert ac.slant_range(0.0, 0.0, 30e3) == pytest.approx(30e3, rel=1e-4)  # chord slightly shorter than the arc
+    assert ac.slant_range(0.0, 1000.0, 30e3) == pytest.approx(math.hypot(30e3, 1000.0), rel=1e-3)
+
+
+def test_reception_zone_matches_the_link_budget_on_flat_terrain():
+    """Margin 0 dB at a slant range of 100 km; Rayleigh needs +9.77 dB for 90 % and +1.59 dB for 50 %."""
+    link = ac.LinkBudget(freq_mhz=1090, eirp_dbm=51, rx_gain_dbi=0, sensitivity_dbm=51 - 133.2)
+    az, d, probability, _ = ac.compute_reception(ac.Terrain([Flat()]), LAT, LON, 10.0, [1000.0], 450e3, 100.0, 90.0,
+                                                 4 / 3, link)
+    _, _, visible, _ = ac.compute_coverage(ac.Terrain([Flat()]), LAT, LON, 10.0, [1000.0], 450e3, 100.0, 90.0, 4 / 3)
+    r50 = ac.continuous_range(probability >= 0.5, d)[0, 0]
+    r90 = ac.continuous_range(probability >= 0.9, d)[0, 0]
+    los = ac.continuous_range(visible, d)[0, 0]
+    assert r90 == pytest.approx(math.sqrt((100e3 * 10 ** (-9.77 / 20)) ** 2 - 990.0**2), abs=300)
+    assert r50 == pytest.approx(math.sqrt((100e3 * 10 ** (-1.59 / 20)) ** 2 - 990.0**2), abs=300)
+    assert r90 < r50 < los
+    assert np.all(probability[~visible] == 0)
+
+
+def test_reception_is_zero_behind_the_terrain():
+    link = ac.LinkBudget(1090, 51, 0, -100)  # generous budget: only the terrain can stop the signal
+    ridge = EastProfile(lambda dx: 2000 * np.exp(-((dx - 20000) ** 2) / (2 * 1500**2)))
+    az, d, probability, _ = ac.compute_reception(ac.Terrain([ridge]), LAT, LON, 10.0, [3000.0], 100e3, 100.0, 90.0,
+                                                 4 / 3, link)
+    east, west = list(az).index(90), list(az).index(270)
+    assert probability[0, east, 400] == 0 and probability[0, west, 400] > 0.9  # 40 km: shadow vs open
+
+
+def test_cli_fading_requires_the_link_budget(capsys):
+    with pytest.raises(SystemExit) as error:
+        ac.main([str(LAT), str(LON), "--flat", "--fading", "rice", "--freq-mhz", "1090"])
+    assert error.value.code == 2
+    message = capsys.readouterr().err
+    assert "--eirp-dbm" in message and "--sensitivity-dbm" in message and "--k-db" in message
+
+
+@pytest.mark.parametrize("fading", ["rayleigh", "rice"])
+def test_cli_fading_writes_a_kml_of_the_received_zone(tmp_path, capsys, fading):
+    pytest.importorskip("scipy")
+    out = tmp_path / "reception.kml"
+    ac.main([str(LAT), str(LON), "--flat", "--agl", "--az-step", "10", "-o", str(out), "--fading", fading,
+             "--freq-mhz", "1090", "--eirp-dbm", "51", "--rx-gain-dbi", "3", "--sensitivity-dbm", "-84", "--k-db", "10"])
+    text = out.read_text(encoding="utf-8")
+    assert "received max" in text and "Reception probability at least 90%" in text
+    assert len(ET.fromstring(text.encode()).findall(f".//{KML}Polygon")) > 0
+    assert "max received" in capsys.readouterr().out

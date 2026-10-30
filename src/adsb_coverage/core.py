@@ -4,7 +4,7 @@ Theoretical reception coverage of a fixed ADS-B / ADS-L ground receiver.
 Model
 -----
 Line-of-sight (LOS) visibility with an effective Earth radius k*R (k = 4/3 by default, the standard
-atmosphere, or "Clarke", model), obstructed by terrain along radial profiles. For every azimuth the tool
+atmosphere [2]), obstructed by terrain along radial profiles. For every azimuth the tool
 decides, at each distance, whether an aircraft at a given level is visible from the antenna. Levels are
 either constant altitudes (AMSL, the default) or heights above the local ground (AGL, ``--agl``).
 
@@ -14,6 +14,34 @@ Terrain
 - Copernicus GLO-30 (30 m, AWS open data) for the rest, read at low resolution from the cloud-optimised
   GeoTIFF overviews. Requires rasterio.
 - or local GeoTIFF terrain models in EPSG:4326 (``--dem``).
+
+Fading (optional, ``--fading``)
+-------------------------------
+On top of the geometry, the tool can estimate the probability that a message is received. The mean received
+power comes from the free-space link budget (Friis transmission formula [5]) at the slant range. Around that mean
+the envelope fluctuates as in Clarke's scattering model: the field is the sum of many randomly phased waves, so its
+components are complex Gaussian and the envelope is Rayleigh distributed when there is no direct wave, and Rice
+distributed when a direct wave of significant magnitude is added to the scattered ones [1, section 2.1,
+pp. 961-962, which refers to Davenport and Root [4], pp. 160-161 (Rayleigh) and 165-167 (Rice), and to Rice [3]].
+The power is therefore exponentially distributed (Rayleigh) or non-central chi-square distributed with two degrees
+of freedom (Rice, K-factor = direct power / scattered power); these two closed forms are standard consequences of
+the envelope distributions and are not written out in [1]. A message is received when the instantaneous power
+exceeds the receiver sensitivity. Only these first-order statistics of the paper are used; its Doppler spectrum,
+frequency correlation and time-delay results are not.
+
+References
+----------
+[1] R. H. Clarke, "A Statistical Theory of Mobile-Radio Reception", Bell System Technical Journal, vol. 47,
+    no. 6, pp. 957-1000, July-August 1968.
+[2] Effective Earth radius and k-factor (k = 4/3): Recommendation ITU-R P.834, "Effects of tropospheric
+    refraction on radiowave propagation", Annex 1, section 2 (Re = k a; equation (3) for k; k = 4/3 as the
+    standard value). Read in version P.834-3.
+[3] S. O. Rice, "Statistical Properties of a Sine Wave Plus Random Noise", Bell System Technical Journal,
+    vol. 27, no. 1, pp. 109-157, January 1948 (cited by [1]).
+[4] W. B. Davenport and W. L. Root, An Introduction to the Theory of Random Signals and Noise, McGraw-Hill,
+    New York, 1958, pp. 160-161 and 165-167 (as cited by [1], p. 962).
+[5] H. T. Friis, "A Note on a Simple Transmission Formula", Proceedings of the IRE, vol. 34, no. 5,
+    pp. 254-256, May 1946.
 
 Output: a KML file (one layer per level) and a summary table of the ranges on the console.
 
@@ -31,13 +59,16 @@ import sys
 import warnings
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 from xml.sax.saxutils import escape
 
 import numpy as np
 
 R_EARTH = 6371008.8  # mean Earth radius (m)
 FT = 0.3048  # metres per foot
+C_LIGHT = 299_792_458.0  # speed of light (m/s)
 STAC_ITEMS = "https://data.geo.admin.ch/api/stac/v0.9/collections/ch.swisstopo.swissalti3d/items"
 COP_URL = "https://copernicus-dem-30m.s3.amazonaws.com/{n}/{n}.tif"
 
@@ -324,20 +355,8 @@ class Terrain:
 
 
 # ----------------------------------------------------------------------------- propagation model
-def compute_coverage(terrain, lat, lon, ant_h, heights_m, rmax, step, az_step, k, ground=None, agl=False):
-    """
-    Visibility of aircraft along radial profiles around the antenna.
-
-    Returns (azimuths, distances, visible, ground_m) where visible[level, azimuth, distance] is True when an
-    aircraft at that level and distance is in line of sight of the antenna.
-
-    In the "flat Earth" frame a point at distance d and height h has the apparent height h - d^2 / (2 k R).
-    An aircraft is visible when the slope from the antenna to it is at least the steepest slope to any terrain
-    met so far (including the terrain under the aircraft).
-    - AMSL levels (agl=False): constant altitudes. Visibility ends at the first obstruction.
-    - AGL levels (agl=True): heights above the local ground, the aircraft follows the relief. Visibility is
-      no longer monotonic with distance: an aircraft can reappear beyond a ridge, over a higher valley.
-    """
+def _terrain_profiles(terrain, lat, lon, ant_h, rmax, step, az_step, k, ground):
+    """Terrain along radial profiles and the steepest slope to it, seen from the antenna."""
     az = np.arange(0, 360, az_step, dtype=float)
     d = np.arange(step, rmax + step, step, dtype=float)
     points_lat, points_lon = destination(lat, lon, az[:, None], d[None, :])
@@ -346,11 +365,100 @@ def compute_coverage(terrain, lat, lon, ant_h, heights_m, rmax, step, az_step, k
     antenna = ground_m + ant_h
     bulge = d**2 / (2 * k * R_EARTH)
     steepest_terrain = np.maximum.accumulate((z - bulge - antenna) / d, axis=1)
-    visible = np.empty((len(heights_m), len(az), len(d)), dtype=bool)
-    for i, h in enumerate(heights_m):
-        aircraft = z + h if agl else h  # altitude AMSL of the aircraft
-        visible[i] = (aircraft - bulge - antenna) / d >= steepest_terrain
+    return az, d, z, ground_m, antenna, bulge, steepest_terrain
+
+
+def _level_visibility(z, height, agl, antenna, bulge, d, steepest_terrain):
+    """Altitude AMSL of the aircraft (scalar, or [azimuth, distance] in AGL) and its visibility mask."""
+    aircraft = z + height if agl else height
+    return aircraft, (aircraft - bulge - antenna) / d >= steepest_terrain
+
+
+def compute_coverage(terrain, lat, lon, ant_h, heights_m, rmax, step, az_step, k, ground=None, agl=False):
+    """
+    Visibility of aircraft along radial profiles around the antenna.
+
+    Returns (azimuths, distances, visible, ground_m) where visible[level, azimuth, distance] is True when an
+    aircraft at that level and distance is in line of sight of the antenna.
+
+    The effective Earth radius is k R [2]. In the "flat Earth" frame (the usual parabolic approximation of the Earth
+    bulge) a point at distance d and height h has the apparent height h - d^2 / (2 k R).
+    An aircraft is visible when the slope from the antenna to it is at least the steepest slope to any terrain
+    met so far (including the terrain under the aircraft).
+    - AMSL levels (agl=False): constant altitudes. Visibility ends at the first obstruction.
+    - AGL levels (agl=True): heights above the local ground, the aircraft follows the relief. Visibility is
+      no longer monotonic with distance: an aircraft can reappear beyond a ridge, over a higher valley.
+    """
+    az, d, z, ground_m, antenna, bulge, steepest = _terrain_profiles(terrain, lat, lon, ant_h, rmax, step,
+                                                                     az_step, k, ground)
+    visible = np.stack([_level_visibility(z, h, agl, antenna, bulge, d, steepest)[1] for h in heights_m])
     return az, d, visible, ground_m
+
+
+@dataclass(frozen=True)
+class LinkBudget:
+    """Free-space link budget and fading statistics of the transmission.
+
+    k_db is the Rice K-factor in dB (direct power / scattered power); None means Rayleigh, i.e. Clarke's case of a
+    purely scattered field.
+    """
+
+    freq_mhz: float
+    eirp_dbm: float  # equivalent isotropic radiated power of the aircraft transmitter
+    rx_gain_dbi: float  # receiving antenna gain, assumed constant in elevation and azimuth
+    sensitivity_dbm: float  # minimum received power for a message to be decoded
+    losses_db: float = 0.0  # cable, connector and other losses at the receiver
+    k_db: Optional[float] = None
+
+    def mean_power_dbm(self, slant_m):
+        """Mean received power (dBm) at the slant range: EIRP + gain - losses - free-space path loss [5]."""
+        path_loss = 20 * np.log10(4 * np.pi * slant_m * self.freq_mhz * 1e6 / C_LIGHT)
+        return self.eirp_dbm + self.rx_gain_dbi - self.losses_db - path_loss
+
+    def reception_probability(self, slant_m):
+        """Probability that the instantaneous power exceeds the sensitivity at the slant range."""
+        return reception_probability(self.mean_power_dbm(slant_m) - self.sensitivity_dbm, self.k_db)
+
+
+def reception_probability(margin_db, k_db=None):
+    """P(instantaneous power >= sensitivity) for a mean power `margin_db` above the sensitivity.
+
+    With s = sensitivity / mean power (linear), the power of a Rayleigh envelope (scattered field only, Clarke [1],
+    section 2.1, p. 962) is exponentially distributed, P = exp(-s). With a direct wave (Rice [3, 4]) (Rice, K-factor K linear), 2(K+1) times the power over its
+    mean is non-central chi-square with 2 degrees of freedom and non-centrality 2K, so P = ncx2.sf(2(K+1) s, 2, 2K),
+    which is the Marcum Q-function Q1(sqrt(2K), sqrt(2(K+1) s)); for K = 0 this is the Rayleigh result.
+    Rice requires scipy.
+    """
+    s = 10.0 ** (-np.asarray(margin_db, dtype=float) / 10)
+    if k_db is None:
+        return np.exp(-s)
+    from scipy.stats import ncx2
+
+    k = 10.0 ** (k_db / 10)
+    return ncx2.sf(2 * (k + 1) * s, 2, 2 * k)
+
+
+def slant_range(antenna, aircraft, d):
+    """Straight-line distance (m) between the antenna and an aircraft at ground distance d (arc length)."""
+    r1, r2 = R_EARTH + antenna, R_EARTH + aircraft
+    return np.sqrt((r2 - r1) ** 2 + 4 * r1 * r2 * np.sin(d / (2 * R_EARTH)) ** 2)
+
+
+def compute_reception(terrain, lat, lon, ant_h, heights_m, rmax, step, az_step, k, link, ground=None, agl=False):
+    """
+    Probability of receiving a message, along the same profiles as compute_coverage.
+
+    Returns (azimuths, distances, probability, ground_m); probability[level, azimuth, distance] is 0 where the
+    aircraft is not in line of sight, otherwise the reception probability given by the link budget `link`.
+    """
+    az, d, z, ground_m, antenna, bulge, steepest = _terrain_profiles(terrain, lat, lon, ant_h, rmax, step,
+                                                                     az_step, k, ground)
+    levels = []
+    for h in heights_m:
+        aircraft, visible = _level_visibility(z, h, agl, antenna, bulge, d, steepest)
+        probability = link.reception_probability(slant_range(antenna, aircraft, d))
+        levels.append(np.where(visible, probability, 0.0))
+    return az, d, np.stack(levels), ground_m
 
 
 def continuous_range(visible, d):
@@ -395,8 +503,12 @@ def _level_colours(n):
         yield int(255 * t), int(200 * (1 - abs(2 * t - 1)) + 55), int(255 * (1 - t))
 
 
-def write_kml(path, lat, lon, ground_m, ant_h, az, d, visible, levels_ft, k, agl=False, az_step=1.0, step=250.0):
-    """Write one KML layer per level; return (continuous range, max visible range), each [level, azimuth] in m.
+def write_kml(path, lat, lon, ground_m, ant_h, az, d, visible, levels_ft, k, agl=False, az_step=1.0, step=250.0,
+              quantity="visible", note=""):
+    """Write one KML layer per level; return (continuous range, farthest range), each [level, azimuth] in m.
+
+    `visible` is the boolean mask [level, azimuth, distance] to draw; `quantity` names it in the labels
+    ("visible", or "received" when it comes from a reception probability) and `note` is added to the description.
 
     AMSL levels are drawn as the outline of the continuous coverage; AGL levels as the visible sectors,
     which may be fragmented in mountainous terrain.
@@ -409,7 +521,7 @@ def write_kml(path, lat, lon, ground_m, ant_h, az, d, visible, levels_ft, k, agl
            f"<name>ADS-B/ADS-L coverage {lat:.4f}, {lon:.4f}</name>",
            f"<description>Theoretical line-of-sight coverage, k={k:.4f}, antenna {ant_h:g} m AGL "
            f"(ground {ground_m:.0f} m). Levels in {reference}"
-           f"{' (height above ground)' if agl else ''}.</description>"]
+           f"{' (height above ground)' if agl else ''}.{' ' + note if note else ''}</description>"]
     for i, (r, g, b) in enumerate(_level_colours(len(levels_ft))):
         out.append(f'<Style id="s{i}"><LineStyle><color>ff{b:02x}{g:02x}{r:02x}</color><width>2</width></LineStyle>'
                    f'<PolyStyle><color>{"55" if agl else "33"}{b:02x}{g:02x}{r:02x}</color>'
@@ -420,7 +532,7 @@ def write_kml(path, lat, lon, ground_m, ant_h, az, d, visible, levels_ft, k, agl
     out.append("<Folder><name>Coverage by level</name>")
     for i in reversed(range(len(levels_ft))):  # high levels underneath, low levels on top
         label = (f"{levels_ft[i]:g} ft {reference} - continuous max {continuous[i].max() / 1000:.0f} km, "
-                 f"visible max {farthest[i].max() / 1000:.0f} km")
+                 f"{quantity} max {farthest[i].max() / 1000:.0f} km")
         if agl:
             rows, starts, ends = visible_runs(visible[i], d, step)
             if len(rows) == 0:
@@ -432,7 +544,7 @@ def write_kml(path, lat, lon, ground_m, ant_h, az, d, visible, levels_ft, k, agl
                 corners = [destination(lat, lon, a, r) for a, r in ((a0, r0), (a1, r0), (a1, r1), (a0, r1))]
                 sectors.append(_polygon([(float(c[1]), float(c[0])) for c in corners]))
             geometry = f"<MultiGeometry>{''.join(sectors)}</MultiGeometry>"
-            description = f"<description>{visible[i].mean():.1%} of sampled points visible</description>"
+            description = f"<description>{visible[i].mean():.1%} of sampled points {quantity}</description>"
         else:
             reach = continuous[i]
             plat, plon = destination(lat, lon, az, reach)
@@ -472,11 +584,47 @@ def build_parser():
     ap.add_argument("--ca-bundle", default=None, help="CA certificate(s) in PEM format (proxy with SSL inspection)")
     ap.add_argument("--timeout", type=float, default=30.0, help="connection timeout (s)")
     ap.add_argument("--flat", action="store_true", help="flat terrain at 0 m (theoretical radio horizon, for testing)")
+
+    fading = ap.add_argument_group("fading and link budget (Clarke 1968)",
+                                   "With --fading, the drawn zone is where a message is received with at least the "
+                                   "probability --prob, instead of the pure line-of-sight zone. All the link budget "
+                                   "values below must then be given.")
+    fading.add_argument("--fading", choices=["none", "rayleigh", "rice"], default="none",
+                        help="rayleigh: scattered field only (Clarke); rice: direct wave plus scattered field, needs --k-db and scipy")
+    fading.add_argument("--freq-mhz", type=float, default=None, help="carrier frequency (MHz)")
+    fading.add_argument("--eirp-dbm", type=float, default=None, help="aircraft transmitter EIRP (dBm)")
+    fading.add_argument("--rx-gain-dbi", type=float, default=None, help="receiving antenna gain (dBi), constant in all directions")
+    fading.add_argument("--sensitivity-dbm", type=float, default=None, help="receiver sensitivity, minimum power to decode a message (dBm)")
+    fading.add_argument("--losses-db", type=float, default=0.0, help="cable and connector losses at the receiver (dB)")
+    fading.add_argument("--k-db", type=float, default=None, help="Rice K-factor, direct over scattered power (dB); 0 dB is not Rayleigh, use --fading rayleigh")
+    fading.add_argument("--prob", type=float, default=0.9, help="minimum reception probability of the drawn zone, between 0 and 1 (default 0.9)")
     return ap
 
 
+def link_from_args(ap, a):
+    """LinkBudget from the command line, or None without --fading; reports missing or invalid values with ap.error."""
+    if a.fading == "none":
+        return None
+    required = [("--freq-mhz", a.freq_mhz), ("--eirp-dbm", a.eirp_dbm), ("--rx-gain-dbi", a.rx_gain_dbi),
+                ("--sensitivity-dbm", a.sensitivity_dbm)] + ([("--k-db", a.k_db)] if a.fading == "rice" else [])
+    missing = [name for name, value in required if value is None]
+    if missing:
+        ap.error(f"--fading {a.fading} requires: {', '.join(missing)}")
+    if not 0 < a.prob < 1:
+        ap.error("--prob must be between 0 and 1 (exclusive)")
+    if a.fading == "rice":
+        try:
+            import scipy.stats  # noqa: F401
+        except ImportError:
+            ap.error("--fading rice requires scipy: pip install scipy")
+    return LinkBudget(a.freq_mhz, a.eirp_dbm, a.rx_gain_dbi, a.sensitivity_dbm, a.losses_db,
+                      a.k_db if a.fading == "rice" else None)
+
+
 def main(argv=None):
-    a = build_parser().parse_args(argv)
+    ap = build_parser()
+    a = ap.parse_args(argv)
+    link = link_from_args(ap, a)
 
     if a.proxy:
         HTTP["proxies"] = {"http": a.proxy, "https": a.proxy}
@@ -503,19 +651,32 @@ def main(argv=None):
                                  "(or use --far none to rely on swissALTI3D only).") from None
     terrain = Terrain(sources)
 
-    az, d, visible, ground_m = compute_coverage(terrain, a.lat, a.lon, a.ant_h, [f * FT for f in levels_ft], rmax,
-                                                step, a.az_step, a.k, a.ground_m, a.agl)
+    heights_m = [f * FT for f in levels_ft]
+    if link:
+        az, d, probability, ground_m = compute_reception(terrain, a.lat, a.lon, a.ant_h, heights_m, rmax, step,
+                                                         a.az_step, a.k, link, a.ground_m, a.agl)
+        visible = probability >= a.prob
+        quantity = "received"
+        statistic = f"Rice K={link.k_db:g} dB" if link.k_db is not None else "Rayleigh"
+        note = (f"Reception probability at least {a.prob:.0%} ({statistic}; {link.freq_mhz:g} MHz, EIRP {link.eirp_dbm:g} dBm, "
+                f"receiver gain {link.rx_gain_dbi:g} dBi, losses {link.losses_db:g} dB, sensitivity {link.sensitivity_dbm:g} dBm).")
+    else:
+        az, d, visible, ground_m = compute_coverage(terrain, a.lat, a.lon, a.ant_h, heights_m, rmax, step, a.az_step,
+                                                    a.k, a.ground_m, a.agl)
+        quantity, note = "visible", ""
     if terrain.unknown > 0.02 and not a.flat:
         print(f"Warning: {terrain.unknown:.0%} of the points have no terrain data (treated as 0 m).", file=sys.stderr)
 
     continuous, farthest = write_kml(a.output, a.lat, a.lon, ground_m, a.ant_h, az, d, visible, levels_ft, a.k,
-                                     a.agl, a.az_step, step)
+                                     a.agl, a.az_step, step, quantity, note)
     reference = "AGL" if a.agl else "AMSL"
     print(f"Receiver ground: {ground_m:.0f} m; antenna: {ground_m + a.ant_h:.0f} m AMSL; k = {a.k:.4f}; levels in {reference}")
-    print(f"{'Level':>9} | continuous range (km): {'min':>5} {'mean':>5} {'max':>5} | {'max visible':>11} | {'visible':>7}")
+    if note:
+        print(note)
+    print(f"{'Level':>9} | continuous range (km): {'min':>5} {'mean':>5} {'max':>5} | {'max ' + quantity:>12} | {quantity:>8}")
     for ft, cont, far, vis in zip(levels_ft, continuous, farthest, visible):
         print(f"{ft:>6g} ft | {'':>22} {cont.min() / 1000:5.1f} {cont.mean() / 1000:5.1f} {cont.max() / 1000:5.1f} | "
-              f"{far.max() / 1000:8.1f} km | {vis.mean():7.1%}")
+              f"{far.max() / 1000:9.1f} km | {vis.mean():8.1%}")
     print(f"KML: {a.output}")
 
 

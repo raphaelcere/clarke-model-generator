@@ -23,6 +23,7 @@ it can be seen, and the terrain hollows out "holes" behind mountains, especially
 ```
 pip install -e .            # numpy + requests
 pip install -e ".[geotiff]" # + rasterio (far terrain from Copernicus, local terrain models)
+pip install -e ".[fading]"  # + scipy (--fading rice)
 ```
 
 Python 3.9 to 3.13 (tested by the continuous integration on every push).
@@ -39,6 +40,16 @@ adsb-coverage 46.9480 7.4474 --agl --alt-ft 30,100,300,1000 --near-res-m 10 -o l
 
 A summary of the ranges is printed on the console, and the KML has one layer per level (with `--agl`, the visible
 sectors are drawn one by one). `adsb-coverage --help` lists all the options.
+
+With `--fading`, the drawn zone is where a message is received with at least a given probability (see
+[Reception probability](#reception-probability-optional---fading)). All the link budget values must then be given:
+
+```
+adsb-coverage 46.9480 7.4474 --agl --fading rice --k-db KDB --prob 0.9 \
+    --freq-mhz F --eirp-dbm P --rx-gain-dbi G --losses-db L --sensitivity-dbm S -o reception.kml
+```
+
+`--fading rayleigh` needs no `--k-db`. The same options exist in the online workflow below.
 
 ## Online calculation (GitHub Actions)
 
@@ -115,9 +126,16 @@ classDiagram
     class Propagation {
         <<module functions>>
         +compute_coverage(...) visible
+        +compute_reception(..., link) probability
         +continuous_range(visible, d)
         +max_visible_range(visible, d)
         +visible_runs(visible, d, step)
+    }
+    class LinkBudget {
+        +freq_mhz, eirp_dbm, rx_gain_dbi
+        +sensitivity_dbm, losses_db, k_db
+        +mean_power_dbm(slant)
+        +reception_probability(slant)
     }
     class KmlWriter {
         <<module functions>>
@@ -139,6 +157,8 @@ classDiagram
     CLI --> Terrain : builds
     CLI --> Propagation : calls
     CLI --> KmlWriter : calls
+    CLI --> LinkBudget : builds with --fading
+    Propagation ..> LinkBudget : uses
     Propagation --> Terrain : samples the terrain
     Propagation ..> Geodesy
     SwissAlti3D ..> Geodesy
@@ -161,7 +181,7 @@ sequenceDiagram
     S-->>C: decimated terrain (local cache)
     C->>G: read Copernicus 30 m or a local model (far zone)
     C->>T: chain the sources
-    C->>P: antenna, levels, maximum range, k
+    C->>P: antenna, levels, maximum range, k (and link budget with --fading)
     loop for each azimuth and distance step
         P->>T: ground elevation?
         T-->>P: terrain (swissALTI3D, else Copernicus)
@@ -173,10 +193,41 @@ sequenceDiagram
 
 ## Model
 
-For each azimuth, the terrain is sampled along a profile. In a "flat Earth" frame (apparent height
-h - d^2/(2 k R)), an aircraft is visible if the slope from the antenna to the aircraft is at least the steepest slope
-to any terrain met so far. There is no Fresnel zone, link budget or man-made obstacle (buildings, vegetation):
-this is purely geometric visibility.
+### Line of sight
+
+For each azimuth, the terrain is sampled along a profile. The effective Earth radius is k R with k = 4/3, the
+standard atmosphere value [2] (Recommendation ITU-R P.834, Annex 1, section 2: R<sub>e</sub> = k a, equation (3) for k,
+and k = 4/3 as the standard value). In the "flat Earth" frame, the usual parabolic approximation of the Earth bulge,
+a point at distance d and height h has the apparent height h - d<sup>2</sup>/(2 k R). An aircraft is visible if the slope
+from the antenna to the aircraft is at least the steepest slope to any terrain met so far.
+
+### Reception probability (optional, `--fading`)
+
+On top of the geometry, the tool can estimate the probability that a message is received.
+
+1. **Mean power.** Free-space link budget at the slant range d [5]:
+   P<sub>mean</sub> = EIRP + G<sub>rx</sub> - L - 20 log<sub>10</sub>(4 pi d f / c) (dBm), with the receiving antenna gain
+   G<sub>rx</sub> and the losses L taken as constant.
+2. **Fading around the mean.** Clarke's model [1], section 2.1 (pp. 961-962): the field is the sum of N randomly phased
+   waves, so its components are complex Gaussian (central limit theorem) and the envelope is **Rayleigh** distributed. If a
+   direct wave of significant magnitude is added to the scattered ones, the envelope is **Rice** distributed
+   (Rice [3]; Clarke refers to Davenport and Root [4], pp. 160-161 for the Rayleigh case and pp. 165-167 for the Rice case).
+3. **Probability.** A message is received when the instantaneous power exceeds the sensitivity S. With
+   s = S / P<sub>mean</sub> (linear):
+   - Rayleigh: P = exp(-s), because the power of a Rayleigh envelope is exponentially distributed;
+   - Rice with K-factor K (direct over scattered power, linear): P = Q<sub>1</sub>(sqrt(2K), sqrt(2(K+1)s)), the survival function
+     of a non-central chi-square variable with 2 degrees of freedom; K = 0 gives the Rayleigh case.
+
+   These two closed forms are standard consequences of the envelope distributions; Clarke's paper does not write them out.
+4. **Zone.** Points that are not in line of sight get probability 0; the KML shows where the probability is at least `--prob`.
+
+Only the first-order statistics of [1] (section II) are used. Its signal spectrum (Doppler), frequency correlation and
+time-delay results are not.
+
+**Caveats.** Clarke's model describes a receiver moving through a scattering environment, with the direct path often
+obstructed. For an aircraft in line of sight of a fixed ground receiver, Rice is the closer case and the K-factor is an input
+that the tool does not derive: Rayleigh (K = 0) is the pessimistic limit. Ground reflections (two-ray), antenna patterns and
+man-made obstacles are not modelled, and the link budget values (EIRP, gains, sensitivity) are inputs, not defaults.
 
 ## Terrain data
 
@@ -196,7 +247,20 @@ Corporate network: `--proxy http://host:port`, `--ca-bundle ca.pem`, or offline 
 - Migration of the STAC API from v0.9 (deprecated, active at least until the end of 2026) to v1.
 - `--alt-m` option, automatic detection of the system proxy.
 - Comparison with the range observed in real logs (per azimuth), calibration of k.
-- Man-made obstacles (swissSURFACE3D), Fresnel zone, link budget.
+- Man-made obstacles (swissSURFACE3D), Fresnel zone, ground reflection (two-ray), antenna patterns.
+- Presets for the link budgets of ADS-B (1090 MHz) and ADS-L, once the values are confirmed.
+
+## References
+
+1. R. H. Clarke, "A Statistical Theory of Mobile-Radio Reception", *Bell System Technical Journal*, vol. 47, no. 6, pp. 957-1000, July-August 1968.
+   Used for the scattering model and the Rayleigh / Rice envelope (section 2.1, pp. 961-962).
+2. Recommendation ITU-R P.834, "Effects of tropospheric refraction on radiowave propagation", Annex 1, section 2 (effective Earth radius, k = 4/3).
+   Read in version P.834-3; check the current version before citing a page.
+3. S. O. Rice, "Statistical Properties of a Sine Wave Plus Random Noise", *Bell System Technical Journal*, vol. 27, no. 1, pp. 109-157, January 1948.
+   Cited by [1]; not consulted for this tool.
+4. W. B. Davenport and W. L. Root, *An Introduction to the Theory of Random Signals and Noise*, McGraw-Hill, New York, 1958, pp. 160-161 and 165-167.
+   Page numbers as cited by [1] (p. 962); not consulted for this tool.
+5. H. T. Friis, "A Note on a Simple Transmission Formula", *Proceedings of the IRE*, vol. 34, no. 5, pp. 254-256, May 1946.
 
 ## Development
 
