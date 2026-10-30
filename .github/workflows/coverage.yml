@@ -233,6 +233,6 @@ jobs:
       - name: Publish the KML
         uses: actions/upload-artifact@v4
         with:
-          name: couverture-kml
+          name: coverage-kml
           path: out/*.kml
           retention-days: 30

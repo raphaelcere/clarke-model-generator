@@ -50,7 +50,7 @@ Examples
     adsb-coverage 46.9480 7.4474 --ant-h 15 --alt-ft 1000,3000,10000,30000 -o bern.kml
     adsb-coverage 46.9480 7.4474 --agl -o low.kml        # low altitudes, heights above ground
 
-Dependencies: numpy, requests; rasterio for the far field (Copernicus) and local GeoTIFFs.
+Dependencies: numpy, requests; rasterio for the far field (Copernicus) and local GeoTIFFs; scipy for --fading rice.
 """
 import argparse
 import io
@@ -424,9 +424,11 @@ def reception_probability(margin_db, k_db=None):
     """P(instantaneous power >= sensitivity) for a mean power `margin_db` above the sensitivity.
 
     With s = sensitivity / mean power (linear), the power of a Rayleigh envelope (scattered field only, Clarke [1],
-    section 2.1, p. 962) is exponentially distributed, P = exp(-s). With a direct wave (Rice [3, 4]) (Rice, K-factor K linear), 2(K+1) times the power over its
-    mean is non-central chi-square with 2 degrees of freedom and non-centrality 2K, so P = ncx2.sf(2(K+1) s, 2, 2K),
-    which is the Marcum Q-function Q1(sqrt(2K), sqrt(2(K+1) s)); for K = 0 this is the Rayleigh result.
+    section 2.1, p. 962) is exponentially distributed: P = exp(-s).
+
+    With a direct wave (Rice [3, 4]) and K-factor K (linear), 2(K+1) times the power over its mean is non-central
+    chi-square with 2 degrees of freedom and non-centrality 2K, so P = ncx2.sf(2(K+1) s, 2, 2K), the Marcum
+    Q-function Q1(sqrt(2K), sqrt(2(K+1) s)). K = 0 (linear, i.e. k_db = -inf) gives the Rayleigh result.
     Rice requires scipy.
     """
     s = 10.0 ** (-np.asarray(margin_db, dtype=float) / 10)
@@ -596,7 +598,7 @@ def build_parser():
     fading.add_argument("--rx-gain-dbi", type=float, default=None, help="receiving antenna gain (dBi), constant in all directions")
     fading.add_argument("--sensitivity-dbm", type=float, default=None, help="receiver sensitivity, minimum power to decode a message (dBm)")
     fading.add_argument("--losses-db", type=float, default=0.0, help="cable and connector losses at the receiver (dB)")
-    fading.add_argument("--k-db", type=float, default=None, help="Rice K-factor, direct over scattered power (dB); 0 dB is not Rayleigh, use --fading rayleigh")
+    fading.add_argument("--k-db", type=float, default=None, help="Rice K-factor, direct over scattered power (dB); for the purely scattered case use --fading rayleigh")
     fading.add_argument("--prob", type=float, default=0.9, help="minimum reception probability of the drawn zone, between 0 and 1 (default 0.9)")
     return ap
 

@@ -58,6 +58,7 @@ The repository contains a workflow that computes a coverage without installing a
 
 1. Open the **Actions** tab, select the workflow **"ADS-B / ADS-L coverage"** and click **Run workflow**.
 2. Enter the latitude, longitude, mode (`agl` or `amsl`), antenna height and, if needed, the levels in ft.
+   The fading and link budget inputs are optional (same meaning as the command-line options).
 3. Optional, to test the reception probability (fading): choose a **preset** (`adsb1090-example` or
    `adsl-m-example`). It fills the empty link budget fields with the example values of the table in the
    [Model](#model) section and turns fading on as `rice` if it was `none`. A value typed in a field always wins
@@ -220,7 +221,7 @@ On top of the geometry, the tool can estimate the probability that a message is 
    s = S / P<sub>mean</sub> (linear):
    - Rayleigh: P = exp(-s), because the power of a Rayleigh envelope is exponentially distributed;
    - Rice with K-factor K (direct over scattered power, linear): P = Q<sub>1</sub>(sqrt(2K), sqrt(2(K+1)s)), the survival function
-     of a non-central chi-square variable with 2 degrees of freedom; K = 0 gives the Rayleigh case.
+     of a non-central chi-square variable with 2 degrees of freedom; K = 0 (linear, not 0 dB) gives the Rayleigh case.
 
    These two closed forms are standard consequences of the envelope distributions; Clarke's paper does not write them out.
 4. **Zone.** Points that are not in line of sight get probability 0; the KML shows where the probability is at least `--prob`.
@@ -272,7 +273,7 @@ adsb-coverage 46.9480 7.4474 --agl --fading rice --k-db 10 --prob 0.9 \
 
 | Source | Use | Notes |
 |---|---|---|
-| [swissALTI3D](https://www.swisstopo.admin.ch/en/height-model-swissalti3d) (swisstopo, 2 m) | near zone (`--near-km`, default 10 km) | downloaded automatically through the STAC API, cached in `~/.cache/adsb_coverage`, decimated to `--near-res-m` (default 50 m). Bare ground. |
+| [swissALTI3D](https://www.swisstopo.admin.ch/en/height-model-swissalti3d) (swisstopo, 2 m) | near zone (`--near-km`, default 10 km) | downloaded automatically through the STAC API (v0.9), cached in `~/.cache/adsb_coverage`, decimated to `--near-res-m` (default 50 m). Bare ground. |
 | [Copernicus GLO-30](https://registry.opendata.aws/copernicus-dem/) (30 m) | rest of the domain | low-resolution read (`--far-res-m`, default 300 m), requires `rasterio` |
 | Local EPSG:4326 GeoTIFF | `--dem file.tif` | |
 
@@ -287,7 +288,7 @@ Corporate network: `--proxy http://host:port`, `--ca-bundle ca.pem`, or offline 
 - `--alt-m` option, automatic detection of the system proxy.
 - Comparison with the range observed in real logs (per azimuth), calibration of k.
 - Man-made obstacles (swissSURFACE3D), Fresnel zone, ground reflection (two-ray), antenna patterns.
-- Presets for the link budgets of ADS-B (1090 MHz) and ADS-L, once the values are confirmed.
+- Confirmed link budget values: the workflow presets and the table above are examples, not validated defaults.
 
 ## References
 
