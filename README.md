@@ -229,6 +229,41 @@ obstructed. For an aircraft in line of sight of a fixed ground receiver, Rice is
 that the tool does not derive: Rayleigh (K = 0) is the pessimistic limit. Ground reflections (two-ray), antenna patterns and
 man-made obstacles are not modelled, and the link budget values (EIRP, gains, sensitivity) are inputs, not defaults.
 
+### Example link budget values
+
+The tool has no default link budget: every value must be given. The table shows example values and where they come from.
+They are a starting point, not a validated configuration; replace the receiver values with those of your installation.
+
+| Parameter | ADS-B 1090ES | ADS-L (M band) | Source / status |
+|---|---|---|---|
+| `--freq-mhz` | 1090 | 868.2 | ADS-L: [EASA ADS-L 4 SRD860](https://www.easa.europa.eu/en/downloads/142821/en), section C.2 (868.2 and 868.4 MHz). The O band is at 869.525 MHz (sections C.3, C.4). |
+| Transmit power | 125 W peak, i.e. 21 dBW = 51 dBm | 14 dBm ERP (25 mW) | ADS-B: [EASA CS ACNS.D.ELS.010](https://www.easa.europa.eu/en/document-library/easy-access-rules/online-publications/easy-access-rules-airborne-communications?page=25), (c): more than 125 W and at most 500 W (27 dBW) above 15,000 ft or 175 kt; (d): more than 70 W (18.5 dBW) and at most 500 W below. ADS-L: SRD860 section C.2 and [EASA FAQ](https://www.easa.europa.eu/en/faq/141890) (27 dBm ERP in the O band). Peak power at the antenna end of the transmission line for ADS-B. |
+| Aircraft antenna gain | 0 dBi | 2.15 dB (ERP to EIRP) | Assumption for ADS-B. For ADS-L, the usual dipole relation EIRP = ERP + 2.15 dB, not taken from the EASA documents. |
+| `--eirp-dbm` | **51** | **16.15** | Transmit power plus aircraft antenna gain, as above. |
+| `--rx-gain-dbi` | 0 | 0 | Assumption (neutral value); depends on your antenna. |
+| `--losses-db` | 0 | 0 | Assumption (neutral value); depends on your cable and connectors. |
+| `--sensitivity-dbm` | -84 | -100 | ADS-B: lower end of the "-84 to -79 dBm" range of one product, a [uAvionix ground receiver datasheet](https://www.everythingrf.com/products/receivers/uavionix-corporation/131-1620-uax-90083-01); not a standard. ADS-L: **no source**; the SRD860 specification gives no sensitivity but expects a range of at least 10 km for an optimal set-up, which implies roughly -95 to -105 dBm at 14 dBm ERP. |
+| `--k-db` (Rice) | 10 | 10 | **No source**; illustrative only. Calibrate it, with the sensitivity, against reception observed in real logs. `--fading rayleigh` needs no K. |
+| `--prob` | 0.9 | 0.9 | Choice of the drawn contour. |
+
+Indicative free-space ranges for these values (flat terrain, receiver antenna 10 m above ground, aircraft at 3,000 m):
+
+| Case | Rayleigh, P >= 90 % | Rice K = 10 dB, P >= 90 % |
+|---|---|---|
+| ADS-B, 125 W (51 dBm) | 40 km | 87 km |
+| ADS-B, 500 W (57 dBm) | 80 km | 174 km |
+| ADS-L M band, sensitivity -100 dBm | 4.5 km | 12 km |
+| ADS-L M band, sensitivity -105 dBm | 9.5 km | 22 km |
+
+The gap between Rayleigh and Rice is large: at P >= 90 %, Rayleigh is very pessimistic for a line-of-sight link.
+
+Example command with the ADS-B values:
+
+```
+adsb-coverage 46.9480 7.4474 --agl --fading rice --k-db 10 --prob 0.9 \
+    --freq-mhz 1090 --eirp-dbm 51 --rx-gain-dbi 0 --losses-db 0 --sensitivity-dbm -84 -o adsb-reception.kml
+```
+
 ## Terrain data
 
 | Source | Use | Notes |
